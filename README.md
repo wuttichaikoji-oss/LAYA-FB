@@ -50,3 +50,12 @@ Added: LAYA BREAKAGE SPOILLED custom report module based on uploaded form with E
 - Remove attached images while in EDIT mode
 - New **Export Report** button for both pages
 - Export opens a styled printable document that matches the web app look
+
+
+## Added in this version
+- Custom **LAYA LINEN INVENTORY** page based on the uploaded template
+- Edit / Save / Cancel flow like Meal Plan
+- Period switch by month and year
+- 12-month inventory table with live calculated totals
+- Beautiful export report and CSV export
+- Photo upload section with image compression before upload to Firebase Storage
