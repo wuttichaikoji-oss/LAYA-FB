@@ -3,170 +3,57 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Laya Meal Plan Record</title>
+  <title>Laya Operations Hub</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css" />
-
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
 </head>
 <body>
-  <div class="page">
-    <header class="hero-card">
-      <div class="hero-copy">
-        <div class="eyebrow">FOOD & BEVERAGE • PHASE 2</div>
-        <h1>LAYA MEAL PLAN RECORD</h1>
-        <p>
-          หน้าใช้งานสำหรับบันทึก ABF, Meal Plan, HB และ FB แบบอิงจากรูปแบบไฟล์ต้นฉบับ
-          รองรับการกรอกยอดรายวันโดยตรง, บันทึกรายละเอียดแขก, ตั้งราคา, Export และเชื่อม Firebase
-        </p>
-      </div>
-      <div class="hero-grid">
-        <div class="stat-card sand">
-          <div class="label">Total Cover</div>
-          <div class="value" id="statCover">0</div>
-        </div>
-        <div class="stat-card mint">
-          <div class="label">Revenue</div>
-          <div class="value" id="statRevenue">0</div>
-        </div>
-        <div class="stat-card sky">
-          <div class="label">Month</div>
-          <div class="value" id="statMonth">-</div>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-badge">LAYA</div>
+        <div>
+          <h1>Laya Operations Hub</h1>
+          <p>Smart records for daily operations</p>
         </div>
       </div>
-    </header>
-
-    <section class="toolbar-card">
-      <div class="toolbar-grid">
-        <div class="field">
-          <label>Year</label>
-          <input type="number" id="yearInput" min="2024" max="2100" />
+      <nav class="nav-menu" id="navMenu"></nav>
+      <div class="sidebar-footer">
+        <div class="mini-card">
+          <div class="mini-title">Storage</div>
+          <div class="mini-value">Local + Firebase</div>
         </div>
-        <div class="field">
-          <label>Month</label>
-          <select id="monthInput"></select>
-        </div>
-        <div class="field">
-          <label>Period Key</label>
-          <input type="text" id="periodKey" readonly />
+        <div class="mini-card">
+          <div class="mini-title">Mode</div>
+          <div class="mini-value">GitHub Pages Ready</div>
         </div>
       </div>
+    </aside>
 
-      <div class="toolbar-actions">
-        <button class="btn primary" id="addRecordBtn">+ Add Guest Record</button>
-        <button class="btn" id="firebaseSettingsBtn">Firebase Settings</button>
-        <button class="btn" id="syncBtn">Sync Now</button>
-        <button class="btn" id="exportSummaryBtn">Export Summary CSV</button>
-        <button class="btn" id="exportGuestBtn">Export Guest CSV</button>
-        <button class="btn danger" id="clearMonthBtn">Clear This Month</button>
-      </div>
-
-      <div class="firebase-status-row">
-        <div class="firebase-badge" id="firebaseBadge">Firebase: Not connected</div>
-        <div class="firebase-note" id="firebaseNote">ยังไม่ได้ตั้งค่า Firebase ระบบจะเก็บข้อมูลไว้ในเครื่องนี้ก่อน</div>
-      </div>
-    </section>
-
-    <section class="tabs-card">
-      <div class="tabs">
-        <button class="tab-btn active" data-tab="summaryTab">Monthly Summary</button>
-        <button class="tab-btn" data-tab="guestTab">Guest Records</button>
-        <button class="tab-btn" data-tab="priceTab">Price Setup</button>
-      </div>
-
-      <div id="summaryTab" class="tab-panel active">
-        <div class="panel-note">
-          พิมพ์จำนวน cover ลงในช่องของแต่ละวันได้โดยตรง ระบบจะคำนวณ Total Cover และ Revenue ทันที
+    <main class="main-content">
+      <header class="hero">
+        <div class="hero-copy">
+          <div class="eyebrow">Laya Resort Phuket</div>
+          <h2>F&B & Operations Smart Dashboard</h2>
+          <p>
+            รวม 7 ระบบงานไว้ในเว็บเดียว กดเข้าแต่ละโมดูลเพื่อบันทึกข้อมูลจริงได้ทันที
+            โดยหน้า LAYA MEAL PLAN RECORD ถูกทำเป็นเวอร์ชันใช้งานจริง พร้อมเปลี่ยนเดือนได้อิสระ
+            และเชื่อม Firebase เพื่อเก็บข้อมูลได้
+          </p>
         </div>
-        <div class="table-wrap">
-          <table class="summary-table" id="summaryTable"></table>
+        <div class="hero-actions">
+          <button class="hero-btn primary" data-target="dashboard">หน้าเมนูหลัก</button>
+          <button class="hero-btn" id="exportAllBtn">Export All Data</button>
         </div>
-      </div>
+      </header>
 
-      <div id="guestTab" class="tab-panel">
-        <div class="guest-grid">
-          <div class="form-panel">
-            <h3>Add Guest Record</h3>
-            <p class="muted">ใช้สำหรับบันทึกรายชื่อแขก ห้อง และรายละเอียดรายบุคคล ซึ่งจะถูกรวมเข้า summary อัตโนมัติ</p>
-
-            <form id="guestForm" class="guest-form">
-              <div class="field">
-                <label>Date</label>
-                <input type="date" name="date" required />
-              </div>
-              <div class="field">
-                <label>Item</label>
-                <select name="itemCode" required></select>
-              </div>
-              <div class="field">
-                <label>Guest Name</label>
-                <input type="text" name="guestName" placeholder="เช่น Mr. John Doe" required />
-              </div>
-              <div class="field">
-                <label>Room No.</label>
-                <input type="text" name="roomNo" placeholder="A105" />
-              </div>
-              <div class="field">
-                <label>Pax</label>
-                <input type="number" name="pax" min="1" value="1" required />
-              </div>
-              <div class="field">
-                <label>Unit Price</label>
-                <input type="number" name="unitPrice" min="0" value="0" required />
-              </div>
-              <div class="field full">
-                <label>Remark</label>
-                <input type="text" name="remark" placeholder="เช่น Walk-in / Upgrade / Complimentary" />
-              </div>
-              <div class="field full">
-                <button class="btn primary wide" type="submit">Save Record</button>
-              </div>
-            </form>
-          </div>
-
-          <div class="list-panel">
-            <h3>Guest Record List</h3>
-            <p class="muted">ข้อมูลในหน้านี้จะถูกนำไปรวมกับยอดใน Monthly Summary</p>
-            <div class="table-wrap">
-              <table class="guest-table">
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>Item</th>
-                    <th>Guest</th>
-                    <th>Room</th>
-                    <th>Pax</th>
-                    <th>Revenue</th>
-                    <th>Action</th>
-                  </tr>
-                </thead>
-                <tbody id="guestTbody"></tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div id="priceTab" class="tab-panel">
-        <h3>Price Setup</h3>
-        <p class="muted">แก้ราคาของแต่ละรายการได้ตามจริง ราคาที่เปลี่ยนจะนำไปคำนวณ Revenue ทั้งระบบทันที</p>
-        <div class="table-wrap">
-          <table class="price-table">
-            <thead>
-              <tr>
-                <th>Section</th>
-                <th>Item</th>
-                <th>Price</th>
-              </tr>
-            </thead>
-            <tbody id="priceTbody"></tbody>
-          </table>
-        </div>
-      </div>
-    </section>
+      <section id="dashboardView" class="view active"></section>
+      <section id="moduleView" class="view"></section>
+    </main>
   </div>
 
   <div class="modal hidden" id="firebaseModal">
@@ -176,9 +63,7 @@
         <h3>Firebase Settings</h3>
         <button class="modal-close" data-close-modal="true">×</button>
       </div>
-      <p class="muted">
-        วางค่า Firebase Web App Config ของโปรเจกต์ที่ต้องการใช้ ระบบนี้จะเก็บข้อมูลรายเดือนลง Cloud Firestore
-      </p>
+      <p class="muted">ตั้งค่า Firebase ของโปรเจกต์ laya-fb หรือแก้เป็นโปรเจกต์อื่นก็ได้ ระบบจะ sync เฉพาะหน้า Meal Plan</p>
       <form id="firebaseForm" class="firebase-form">
         <div class="field"><label>apiKey</label><input type="text" name="apiKey" /></div>
         <div class="field"><label>authDomain</label><input type="text" name="authDomain" /></div>
@@ -186,14 +71,9 @@
         <div class="field"><label>storageBucket</label><input type="text" name="storageBucket" /></div>
         <div class="field"><label>messagingSenderId</label><input type="text" name="messagingSenderId" /></div>
         <div class="field"><label>appId</label><input type="text" name="appId" /></div>
-        <div class="field full">
-          <button class="btn primary wide" type="submit">Save & Connect</button>
-        </div>
+        <div class="field full"><button class="btn primary wide" type="submit">Save & Connect</button></div>
       </form>
-      <div class="modal-footer-note">
-        Firestore collection ที่ใช้: <strong>layaMealPlanMonths</strong><br>
-        document id: <strong>YYYY-MM</strong>
-      </div>
+      <div class="modal-footer-note">Firestore collection: <strong>layaMealPlanMonths</strong> · document id: <strong>YYYY-MM</strong></div>
     </div>
   </div>
 
