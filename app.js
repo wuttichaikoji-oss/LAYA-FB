@@ -235,7 +235,9 @@ let firebaseState = { app: null, db: null, connected: false };
 let mealState = {
   year: new Date().getFullYear(),
   month: new Date().getMonth(),
-  monthData: null
+  monthData: null,
+  editMode: false,
+  dirty: false
 };
 
 function todayValue(){
@@ -297,7 +299,7 @@ function downloadFile(filename, content, type = "text/csv;charset=utf-8;"){
 function moduleCount(){
   let total = 0;
   modules.forEach(m => {
-    if (m.id === "meal-plan-record") total += (mealState.monthData?.guestRecords || []).length;
+    if (m.id === "meal-plan-record") total += monthCountForCard();
     else total += getRecords(m.id).length;
   });
   return total;
@@ -382,10 +384,10 @@ function renderDashboard(){
       <h4>วิธีใช้งาน</h4>
       <div class="panel-sub">
         กดเข้าแต่ละโมดูลเพื่อกรอกข้อมูลจริง โดยหน้า LAYA MEAL PLAN RECORD รองรับการเปลี่ยนเดือนได้อิสระ,
-        พิมพ์จำนวนแขกลงแต่ละวันได้ 3 หลักอย่างชัดเจน และ sync Firebase ได้
+        ใช้ปุ่ม EDIT / SAVE เพื่อควบคุมการแก้ไขตัวเลขรายวันอย่างชัดเจน
       </div>
       <div class="footer-note">
-        ข้อมูลโมดูลทั่วไปเก็บใน localStorage ส่วน Meal Plan สามารถเก็บทั้งในเครื่องและ Firestore ได้
+        ข้อมูลโมดูลทั่วไปเก็บใน localStorage และหน้า Meal Plan จะบันทึกเมื่อกด SAVE เท่านั้น
       </div>
     </div>
   `;
@@ -663,16 +665,7 @@ function mergeMonthData(base, incoming) {
   Object.keys(incoming?.grid || {}).forEach(key => {
     merged.grid[key] = { ...(merged.grid[key] || {}), ...(incoming.grid[key] || {}) };
   });
-  merged.guestRecords = Array.isArray(base?.guestRecords) ? [...base.guestRecords] : [];
-  if (Array.isArray(incoming?.guestRecords)) {
-    const seen = new Set(merged.guestRecords.map(r => r.id));
-    incoming.guestRecords.forEach(record => {
-      if (!seen.has(record.id)) {
-        seen.add(record.id);
-        merged.guestRecords.push(record);
-      }
-    });
-  }
+  merged.guestRecords = [];
   merged.updatedAt = incoming?.updatedAt || base?.updatedAt || new Date().toISOString();
   return merged;
 }
@@ -701,30 +694,19 @@ function groupBySection() {
   }, {});
 }
 function aggregatedGuestMap() {
-  const map = {};
-  (mealState.monthData?.guestRecords || []).forEach(record => {
-    if (!record.date || !record.itemCode) return;
-    const d = new Date(record.date);
-    if (d.getFullYear() !== mealState.year || d.getMonth() !== mealState.month) return;
-    const day = d.getDate();
-    const key = `${record.itemCode}::${day}`;
-    map[key] = (map[key] || 0) + Number(record.pax || 0);
-  });
-  return map;
+  return {};
 }
 function manualCount(itemKey, day) {
   return Number(mealState.monthData?.grid?.[itemKey]?.[day] || 0);
 }
 function guestCount(itemKey, day) {
-  return aggregatedGuestMap()[`${itemKey}::${day}`] || 0;
+  return 0;
 }
 function combinedCount(itemKey, day) {
-  return manualCount(itemKey, day) + guestCount(itemKey, day);
+  return manualCount(itemKey, day);
 }
 function totalGuestRevenueForItem(itemKey) {
-  return (mealState.monthData?.guestRecords || [])
-    .filter(record => record.itemCode === itemKey)
-    .reduce((sum, record) => sum + Number(record.pax || 0) * Number(record.unitPrice || 0), 0);
+  return 0;
 }
 function totalCoverForItem(itemKey) {
   let total = 0;
@@ -736,7 +718,7 @@ function totalRevenueForItem(itemKey) {
   for (let day = 1; day <= daysInMonth(); day += 1) {
     manualRevenue += manualCount(itemKey, day) * Number(mealState.monthData.prices[itemKey] || 0);
   }
-  return manualRevenue + totalGuestRevenueForItem(itemKey);
+  return manualRevenue;
 }
 function getOverallCover() {
   if (!mealState.monthData) return 0;
@@ -824,7 +806,6 @@ async function syncMonthToFirebase(showAlert = true) {
       month: mealState.month + 1,
       prices: mealState.monthData.prices,
       grid: mealState.monthData.grid,
-      guestRecords: mealState.monthData.guestRecords,
       updatedAtClient: new Date().toISOString(),
       updatedAt: firebase.firestore.FieldValue.serverTimestamp()
     };
@@ -844,7 +825,6 @@ async function loadMonthFromFirebaseIfConnected() {
     mealState.monthData = mergeMonthData(createEmptyMonthData(), {
       prices: data.prices || {},
       grid: data.grid || {},
-      guestRecords: data.guestRecords || [],
       updatedAt: data.updatedAtClient || new Date().toISOString()
     });
     saveLocalMonthData();
@@ -862,7 +842,7 @@ function mealPlanHeaderHtml() {
         <div><button class="back-btn" id="backBtn">← กลับหน้าเมนูหลัก</button></div>
         <div class="eyebrow" style="margin-top:16px">FOOD & BEVERAGE • PHASE 2</div>
         <h3>LAYA MEAL PLAN RECORD</h3>
-        <p>อิงจากรูปแบบไฟล์ต้นฉบับ พร้อมใช้งานจริง มีตารางรายวัน, Guest Record, Price Setup และรองรับ Firebase</p>
+        <p>อิงจากรูปแบบไฟล์ต้นฉบับ พร้อมใช้งานจริง มีตารางรายวัน, Price Setup และระบบล็อกการแก้ไขด้วยปุ่ม EDIT / SAVE</p>
       </div>
       <div class="meal-stat-grid">
         <div class="stat-card sand"><div class="label">Total Cover</div><div class="value" id="statCover">0</div></div>
@@ -871,8 +851,7 @@ function mealPlanHeaderHtml() {
       </div>
     </div>
   `;
-}
-function mealPlanToolbarHtml() {
+}function mealPlanToolbarHtml() {
   return `
     <div class="toolbar-card">
       <div class="meal-toolbar-grid">
@@ -881,66 +860,32 @@ function mealPlanToolbarHtml() {
         <div class="field"><label>Period Key</label><input type="text" id="mealPeriodKey" readonly /></div>
       </div>
       <div class="meal-toolbar-actions">
-        <button class="btn primary" id="mealAddRecordBtn">+ Add Guest Record</button>
-        <button class="btn" id="mealFirebaseBtn">Firebase Settings</button>
-        <button class="btn" id="mealSyncBtn">Sync Now</button>
+        <button class="btn ${mealState.editMode ? "" : "primary"}" id="mealEditBtn" ${mealState.editMode ? "disabled" : ""}>EDIT</button>
+        <button class="btn ${mealState.editMode ? "primary" : ""}" id="mealSaveBtn" ${mealState.editMode ? "" : "disabled"}>SAVE</button>
         <button class="btn" id="mealExportSummaryBtn">Export Summary CSV</button>
-        <button class="btn" id="mealExportGuestBtn">Export Guest CSV</button>
         <button class="btn danger" id="mealClearMonthBtn">Clear This Month</button>
       </div>
-      <div class="firebase-status-row">
-        <div class="firebase-badge" id="firebaseBadge">Firebase: Not connected</div>
-        <div class="firebase-note" id="firebaseNote">ระบบจะเก็บข้อมูลในเครื่องนี้ก่อน หากยังไม่เชื่อม Firebase</div>
+      <div class="meal-mode-note">
+        Current mode: <strong>${mealState.editMode ? "Editing" : "Locked"}</strong>
+        ${mealState.dirty ? "• มีการแก้ไขที่ยังไม่ถูกบันทึก" : ""}
       </div>
     </div>
   `;
-}
-function mealPlanTabsHtml() {
+}function mealPlanTabsHtml() {
   return `
     <div class="tabs-card">
       <div class="meal-tabs">
         <button class="tab-btn active" data-meal-tab="summary">Monthly Summary</button>
-        <button class="tab-btn" data-meal-tab="guest">Guest Records</button>
         <button class="tab-btn" data-meal-tab="price">Price Setup</button>
       </div>
       <div class="meal-tab-panel active" id="mealTabSummary">
-        <div class="muted">พิมพ์จำนวนแขกลงในแต่ละวันได้โดยตรง ช่องถูกขยายให้ใส่เลขได้ 3 หลักอย่างสวยงาม เช่น 120 หรือ 250</div>
+        <div class="muted">กด EDIT ก่อนจึงจะสามารถแก้ไขตัวเลขในช่องรายวันได้ และกด SAVE เพื่อบันทึกและล็อกข้อมูลอีกครั้ง</div>
         <div class="table-wrap"><table class="summary-table" id="summaryTable"></table></div>
       </div>
-      <div class="meal-tab-panel" id="mealTabGuest">
-        <div class="meal-guest-grid">
-          <div class="form-panel">
-            <h4>Add Guest Record</h4>
-            <div class="muted">บันทึกรายชื่อแขก ห้อง และ pax รายบุคคล ระบบจะรวมเข้า summary อัตโนมัติ</div>
-            <form id="mealGuestForm" class="meal-guest-form">
-              <div class="field"><label>Date</label><input type="date" name="date" required /></div>
-              <div class="field"><label>Item</label><select name="itemCode" required></select></div>
-              <div class="field"><label>Guest Name</label><input type="text" name="guestName" placeholder="เช่น Mr. John Doe" required /></div>
-              <div class="field"><label>Room No.</label><input type="text" name="roomNo" placeholder="A105" /></div>
-              <div class="field"><label>Pax</label><input type="number" name="pax" min="1" value="1" required /></div>
-              <div class="field"><label>Unit Price</label><input type="number" name="unitPrice" min="0" value="0" required /></div>
-              <div class="field full"><label>Remark</label><input type="text" name="remark" placeholder="Walk-in / Upgrade / Complimentary" /></div>
-              <div class="field full"><button class="btn primary wide" type="submit">Save Record</button></div>
-            </form>
-          </div>
-          <div class="list-panel">
-            <h4>Guest Record List</h4>
-            <div class="muted">สามารถลบรายการที่คีย์ผิด และข้อมูลฝั่งนี้จะถูกนำไปรวมกับ Monthly Summary</div>
-            <div class="table-wrap">
-              <table class="table">
-                <thead>
-                  <tr><th>Date</th><th>Item</th><th>Guest</th><th>Room</th><th>Pax</th><th>Revenue</th><th>Action</th></tr>
-                </thead>
-                <tbody id="guestTbody"></tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      </div>
       <div class="meal-tab-panel" id="mealTabPrice">
-        <div class="price-panel">
+        <div class="form-panel">
           <h4>Price Setup</h4>
-          <div class="muted">แก้ราคาของแต่ละรายการได้ตามจริง ราคาที่เปลี่ยนจะนำไปคำนวณ Revenue ทันที</div>
+          <div class="muted">ราคาจะแก้ไขได้เมื่ออยู่ในโหมด EDIT และจะถูกบันทึกจริงเมื่อกด SAVE</div>
           <div class="table-wrap">
             <table class="table">
               <thead><tr><th>Section</th><th>Item</th><th>Price</th></tr></thead>
@@ -951,6 +896,19 @@ function mealPlanTabsHtml() {
       </div>
     </div>
   `;
+}function updateMealHeaderStats() {
+  const statCover = document.getElementById("statCover");
+  const statRevenue = document.getElementById("statRevenue");
+  const statMonth = document.getElementById("statMonth");
+  const periodKey = document.getElementById("mealPeriodKey");
+  if (statCover) statCover.textContent = formatNumber(getOverallCover());
+  if (statRevenue) statRevenue.textContent = formatNumber(getOverallRevenue());
+  if (statMonth) statMonth.textContent = monthLabel();
+  if (periodKey) periodKey.value = getPeriodKey();
+}
+function canDiscardMealEdits() {
+  if (!mealState.editMode || !mealState.dirty) return true;
+  return confirm("มีข้อมูลที่ยังไม่ได้กด SAVE ต้องการออกจากโหมดแก้ไขหรือเปลี่ยนเดือนโดยไม่บันทึกหรือไม่?");
 }
 
 function renderMealPlanSummaryTable() {
@@ -986,9 +944,7 @@ function renderMealPlanSummaryTable() {
           ${Array.from({ length: totalDays }, (_, i) => {
             const day = i + 1;
             const manual = manualCount(item.key, day);
-            const guest = guestCount(item.key, day);
-            const title = guest > 0 ? `title="Guest records included: ${guest}"` : "";
-            return `<td><input class="cell-input" type="number" min="0" max="999" value="${manual || ""}" data-item-key="${escapeHtml(item.key)}" data-day="${day}" ${title} /></td>`;
+            return `<td><input class="cell-input" type="number" min="0" max="999" value="${manual || ""}" data-item-key="${escapeHtml(item.key)}" data-day="${day}" ${mealState.editMode ? "" : "disabled"} /></td>`;
           }).join("")}
         </tr>`);
     });
@@ -1004,7 +960,8 @@ function renderMealPlanSummaryTable() {
   table.innerHTML = headRow + `<tbody>${bodyRows.join("")}${totalRow}</tbody>`;
 
   table.querySelectorAll(".cell-input").forEach(input => {
-    input.addEventListener("change", async (event) => {
+    input.addEventListener("change", (event) => {
+      if (!mealState.editMode) return;
       const itemKey = event.target.dataset.itemKey;
       const day = Number(event.target.dataset.day);
       let value = Number(event.target.value || 0);
@@ -1017,40 +974,15 @@ function renderMealPlanSummaryTable() {
         mealState.monthData.grid[itemKey][day] = value;
         event.target.value = value;
       }
-      saveLocalMonthData();
-      renderMealPlanModule(mealState.keepTab || "summary");
-      if (firebaseState.connected) await syncMonthToFirebase(false);
+      mealState.dirty = true;
+      updateMealHeaderStats();
+      renderMealPlanSummaryTable();
     });
   });
 }
 
 function renderMealGuestTable() {
-  const tbody = document.getElementById("guestTbody");
-  if (!tbody) return;
-  const rows = [...mealState.monthData.guestRecords].sort((a, b) => new Date(b.date) - new Date(a.date));
-  if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="7" class="empty-state">ยังไม่มีรายการบันทึกแขก</td></tr>`;
-    return;
-  }
-  tbody.innerHTML = rows.map(record => `
-    <tr>
-      <td>${escapeHtml(record.date)}</td>
-      <td class="table-left">${escapeHtml(record.itemCode)}</td>
-      <td class="table-left">${escapeHtml(record.guestName)}</td>
-      <td>${escapeHtml(record.roomNo || "-")}</td>
-      <td>${formatNumber(record.pax)}</td>
-      <td>${formatNumber(Number(record.pax || 0) * Number(record.unitPrice || 0))}</td>
-      <td><button class="action-link" data-delete-id="${record.id}">Delete</button></td>
-    </tr>
-  `).join("");
-  tbody.querySelectorAll("[data-delete-id]").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      mealState.monthData.guestRecords = mealState.monthData.guestRecords.filter(record => record.id !== btn.dataset.deleteId);
-      saveLocalMonthData();
-      renderMealPlanModule("guest");
-      if (firebaseState.connected) await syncMonthToFirebase(false);
-    });
-  });
+  return;
 }
 
 function renderMealPriceTable() {
@@ -1060,45 +992,58 @@ function renderMealPriceTable() {
     <tr>
       <td>${escapeHtml(item.section)}</td>
       <td class="table-left">${escapeHtml(item.key)}</td>
-      <td><input class="price-cell-input" type="number" min="0" value="${Number(mealState.monthData.prices[item.key] || 0)}" data-price-item="${escapeHtml(item.key)}" /></td>
+      <td><input class="price-cell-input" type="number" min="0" value="${Number(mealState.monthData.prices[item.key] || 0)}" data-price-item="${escapeHtml(item.key)}" ${mealState.editMode ? "" : "disabled"} /></td>
     </tr>
   `).join("");
   tbody.querySelectorAll("[data-price-item]").forEach(input => {
-    input.addEventListener("change", async (event) => {
+    input.addEventListener("change", (event) => {
+      if (!mealState.editMode) return;
       mealState.monthData.prices[event.target.dataset.priceItem] = Number(event.target.value || 0);
-      saveLocalMonthData();
-      renderMealPlanModule("price");
-      if (firebaseState.connected) await syncMonthToFirebase(false);
+      mealState.dirty = true;
+      updateMealHeaderStats();
+      renderMealPriceTable();
+      renderMealPlanSummaryTable();
     });
   });
 }
 
 function bindMealPlanEvents() {
-  document.getElementById("backBtn").addEventListener("click", showDashboard);
+  document.getElementById("backBtn").addEventListener("click", () => {
+    if (!canDiscardMealEdits()) return;
+    mealState.editMode = false;
+    mealState.dirty = false;
+    showDashboard();
+  });
 
   const yearInput = document.getElementById("mealYearInput");
   const monthInput = document.getElementById("mealMonthInput");
-  const periodKey = document.getElementById("mealPeriodKey");
-  const statCover = document.getElementById("statCover");
-  const statRevenue = document.getElementById("statRevenue");
-  const statMonth = document.getElementById("statMonth");
 
   yearInput.value = mealState.year;
   monthInput.innerHTML = MONTHS.map((m, idx) => `<option value="${idx}">${m}</option>`).join("");
   monthInput.value = String(mealState.month);
-  periodKey.value = getPeriodKey();
-  statCover.textContent = formatNumber(getOverallCover());
-  statRevenue.textContent = formatNumber(getOverallRevenue());
-  statMonth.textContent = monthLabel();
+  updateMealHeaderStats();
 
   yearInput.addEventListener("change", async () => {
+    if (!canDiscardMealEdits()) {
+      yearInput.value = mealState.year;
+      return;
+    }
     mealState.year = Number(yearInput.value || new Date().getFullYear());
+    mealState.editMode = false;
+    mealState.dirty = false;
     loadLocalMonthData();
     await loadMonthFromFirebaseIfConnected();
     renderMealPlanModule(mealState.keepTab || "summary");
   });
+
   monthInput.addEventListener("change", async () => {
+    if (!canDiscardMealEdits()) {
+      monthInput.value = String(mealState.month);
+      return;
+    }
     mealState.month = Number(monthInput.value);
+    mealState.editMode = false;
+    mealState.dirty = false;
     loadLocalMonthData();
     await loadMonthFromFirebaseIfConnected();
     renderMealPlanModule(mealState.keepTab || "summary");
@@ -1106,69 +1051,40 @@ function bindMealPlanEvents() {
 
   document.querySelectorAll("[data-meal-tab]").forEach(btn => {
     btn.addEventListener("click", () => {
-      renderMealPlanModule(btn.dataset.mealTab);
+      mealState.keepTab = btn.dataset.mealTab;
+      document.querySelectorAll("[data-meal-tab]").forEach(el => el.classList.toggle("active", el.dataset.mealTab === mealState.keepTab));
+      document.getElementById("mealTabSummary").classList.toggle("active", mealState.keepTab === "summary");
+      document.getElementById("mealTabPrice").classList.toggle("active", mealState.keepTab === "price");
     });
   });
 
-  document.getElementById("mealAddRecordBtn").addEventListener("click", () => renderMealPlanModule("guest"));
-  document.getElementById("mealFirebaseBtn").addEventListener("click", () => {
-    fillFirebaseForm(loadFirebaseConfigFromStorage());
-    firebaseModal.classList.remove("hidden");
+  document.getElementById("mealEditBtn").addEventListener("click", () => {
+    mealState.editMode = true;
+    renderMealPlanModule(mealState.keepTab || "summary");
   });
-  document.getElementById("mealSyncBtn").addEventListener("click", () => syncMonthToFirebase(true));
+
+  document.getElementById("mealSaveBtn").addEventListener("click", async () => {
+    saveLocalMonthData();
+    mealState.editMode = false;
+    mealState.dirty = false;
+    if (firebaseState.connected) await syncMonthToFirebase(false);
+    renderMealPlanModule(mealState.keepTab || "summary");
+  });
+
   document.getElementById("mealExportSummaryBtn").addEventListener("click", () => {
     downloadFile(`laya-meal-plan-summary-${getPeriodKey()}.csv`, toCSV(buildSummaryRowsForExport()));
   });
-  document.getElementById("mealExportGuestBtn").addEventListener("click", () => {
-    downloadFile(`laya-meal-plan-guests-${getPeriodKey()}.csv`, toCSV(mealState.monthData.guestRecords));
-  });
-  document.getElementById("mealClearMonthBtn").addEventListener("click", async () => {
+
+  document.getElementById("mealClearMonthBtn").addEventListener("click", () => {
     if (!confirm(`ลบข้อมูลทั้งหมดของ ${getPeriodKey()} ?`)) return;
     mealState.monthData = createEmptyMonthData();
+    mealState.editMode = false;
+    mealState.dirty = false;
     saveLocalMonthData();
     renderMealPlanModule(mealState.keepTab || "summary");
-    if (firebaseState.connected) await syncMonthToFirebase(false);
   });
 
-  const form = document.getElementById("mealGuestForm");
-  const itemSelect = form.elements.itemCode;
-  itemSelect.innerHTML = ITEM_MASTER.map(item => `<option value="${escapeHtml(item.key)}">${escapeHtml(item.section)} • ${escapeHtml(item.key)}</option>`).join("");
-  form.elements.date.value = todayValue();
-  form.elements.itemCode.value = ITEM_MASTER[0].key;
-  form.elements.unitPrice.value = mealState.monthData.prices[ITEM_MASTER[0].key] || ITEM_MASTER[0].defaultPrice;
-  itemSelect.addEventListener("change", (event) => {
-    form.elements.unitPrice.value = Number(mealState.monthData.prices[event.target.value] || 0);
-  });
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const payload = {
-      id: crypto.randomUUID(),
-      date: form.elements.date.value,
-      itemCode: form.elements.itemCode.value,
-      guestName: form.elements.guestName.value.trim(),
-      roomNo: form.elements.roomNo.value.trim(),
-      pax: Number(form.elements.pax.value || 0),
-      unitPrice: Number(form.elements.unitPrice.value || 0),
-      remark: form.elements.remark.value.trim()
-    };
-    if (!payload.date || !payload.itemCode || !payload.guestName || payload.pax <= 0) {
-      alert("กรุณากรอกข้อมูลแขกให้ครบ");
-      return;
-    }
-    const d = new Date(payload.date);
-    if (d.getFullYear() !== mealState.year || d.getMonth() !== mealState.month) {
-      alert("วันที่ของ Guest Record ต้องอยู่ในเดือนที่กำลังเปิดใช้งานอยู่");
-      return;
-    }
-    mealState.monthData.guestRecords.push(payload);
-    saveLocalMonthData();
-    renderMealPlanModule("guest");
-    if (firebaseState.connected) await syncMonthToFirebase(false);
-  });
-
-  updateFirebaseStatus(firebaseState.connected, firebaseState.connected ? "Connected" : "Not connected");
   renderMealPlanSummaryTable();
-  renderMealGuestTable();
   renderMealPriceTable();
 }
 
@@ -1188,11 +1104,9 @@ function renderMealPlanModule(activeTab = "summary") {
   `;
   document.querySelectorAll("[data-meal-tab]").forEach(btn => btn.classList.toggle("active", btn.dataset.mealTab === activeTab));
   document.getElementById("mealTabSummary").classList.toggle("active", activeTab === "summary");
-  document.getElementById("mealTabGuest").classList.toggle("active", activeTab === "guest");
   document.getElementById("mealTabPrice").classList.toggle("active", activeTab === "price");
   bindMealPlanEvents();
 }
-
 function showModule(moduleId){
   if (moduleId === "meal-plan-record") return renderMealPlanModule(mealState.keepTab || "summary");
   return showGenericModule(moduleId);
@@ -1244,6 +1158,8 @@ function boot(){
   initFirebaseIfPossible();
   loadLocalMonthData();
   loadMonthFromFirebaseIfConnected().finally(() => {
+    mealState.editMode = false;
+    mealState.dirty = false;
     renderNav("dashboard");
     renderDashboard();
     const hash = (location.hash || "").replace("#", "");

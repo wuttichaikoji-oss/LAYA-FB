@@ -271,7 +271,7 @@ button{cursor:pointer}
 .day-head .dom{display:block;font-size:1rem;padding-bottom:6px}
 .day-head.weekend{background:#ff564f;color:#fff}
 .day-head.weekday{background:#dfe9bc;color:#17200f}
-.cell-input{width:68px;border:1px solid #d8d8d8;border-radius:12px;padding:8px 6px;text-align:center;font-weight:700;font-size:1rem}
+.cell-input{width:86px;border:1px solid #d8d8d8;border-radius:14px;padding:10px 8px;text-align:center;font-weight:700;font-size:1rem;background:#fffdf9}
 .item-label{text-align:left;font-weight:600}
 .total-row{background:#f7f1e8;font-weight:800}
 .revenue-cell{color:#0d4c3a;font-weight:700}
@@ -322,4 +322,23 @@ button{cursor:pointer}
   .meal-toolbar-actions .btn{width:100%}
   .summary-table{min-width:1700px}
   .cell-input{width:62px}
+}
+
+.cell-input:disabled,
+.price-cell-input:disabled{
+  background:#f3efe7;
+  color:#6d7485;
+  border-color:#e3d9ca;
+  cursor:not-allowed;
+  opacity:1;
+}
+.btn[disabled]{
+  opacity:.55;
+  cursor:not-allowed;
+  box-shadow:none;
+}
+.meal-mode-note{
+  margin-top:12px;
+  color:var(--muted);
+  font-size:.95rem;
 }
