@@ -864,9 +864,9 @@ function mealPlanHeaderHtml() {
         <div class="field period-field"><label>Period Key</label><input type="text" id="mealPeriodKey" readonly /></div>
       </div>
       <div class="meal-toolbar-actions">
-        <button class="btn ${mealState.editMode ? "" : "primary"}" id="mealEditBtn" ${mealState.editMode ? "disabled" : ""}>EDIT</button>
-        <button class="btn ${mealState.editMode ? "primary" : ""}" id="mealSaveBtn" ${mealState.editMode ? "" : "disabled"}>SAVE</button>
-        <button class="btn" id="mealCancelBtn" ${mealState.editMode ? "" : "disabled"}>CANCEL</button>
+        <button class="btn ${mealState.editMode ? "btn-soft" : "primary"}" id="mealEditBtn">EDIT</button>
+        <button class="btn ${mealState.editMode ? "primary" : "btn-soft"}" id="mealSaveBtn">SAVE</button>
+        <button class="btn ${mealState.editMode ? "" : "btn-soft"}" id="mealCancelBtn">CANCEL</button>
         <button class="btn" id="mealExportSummaryBtn">Export Summary CSV</button>
         <button class="btn danger" id="mealClearMonthBtn">Clear This Month</button>
       </div>
@@ -1067,6 +1067,7 @@ function bindMealPlanEvents() {
   });
 
   document.getElementById("mealEditBtn").addEventListener("click", () => {
+    if (mealState.editMode) return;
     mealState.savedSnapshot = JSON.parse(JSON.stringify(mealState.monthData));
     mealState.editMode = true;
     mealState.dirty = false;
@@ -1074,6 +1075,10 @@ function bindMealPlanEvents() {
   });
 
   document.getElementById("mealSaveBtn").addEventListener("click", async () => {
+    if (!mealState.editMode) {
+      alert("กรุณากด EDIT ก่อน แล้วค่อยกด SAVE");
+      return;
+    }
     saveLocalMonthData();
     mealState.savedSnapshot = JSON.parse(JSON.stringify(mealState.monthData));
     mealState.editMode = false;
@@ -1083,7 +1088,10 @@ function bindMealPlanEvents() {
   });
 
   document.getElementById("mealCancelBtn").addEventListener("click", () => {
-    if (!mealState.editMode) return;
+    if (!mealState.editMode) {
+      alert("ยังไม่มีการแก้ไขให้ยกเลิก");
+      return;
+    }
     mealState.monthData = mealState.savedSnapshot
       ? JSON.parse(JSON.stringify(mealState.savedSnapshot))
       : createEmptyMonthData();

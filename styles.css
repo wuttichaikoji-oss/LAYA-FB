@@ -392,3 +392,14 @@ button{cursor:pointer}
     min-width:72px;
   }
 }
+
+
+.btn.btn-soft{
+  background:#f3ede3;
+  color:#6e6558;
+  border:1px solid #e0d4c3;
+  box-shadow:none;
+}
+.btn.btn-soft:hover{
+  background:#ece3d6;
+}
