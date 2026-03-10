@@ -41,3 +41,12 @@ Fixed: SAVE now switches Meal Plan back to locked mode immediately after click, 
 Added a special LAYA LOSS DAMAGE page based on the attached Loss / Damage Report template with EDIT / SAVE / CANCEL and per-date saved reports.
 
 Added: LAYA BREAKAGE SPOILLED custom report module based on uploaded form with EDIT / SAVE / CANCEL, date-based reports, totals, and CSV export.
+
+
+## Added in this version
+- Multi-image upload for **LAYA LOSS DAMAGE** and **LAYA BREAKAGE SPOILLED**
+- Images are compressed in the browser before upload to Firebase Storage
+- View attached images from the report screen
+- Remove attached images while in EDIT mode
+- New **Export Report** button for both pages
+- Export opens a styled printable document that matches the web app look

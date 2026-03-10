@@ -235,7 +235,7 @@ const exportAllBtn = document.getElementById("exportAllBtn");
 const firebaseModal = document.getElementById("firebaseModal");
 const firebaseForm = document.getElementById("firebaseForm");
 
-let firebaseState = { app: null, db: null, connected: false };
+let firebaseState = { app: null, db: null, auth: null, storage: null, connected: false };
 let mealState = {
   year: new Date().getFullYear(),
   month: new Date().getMonth(),
@@ -791,7 +791,7 @@ function updateFirebaseStatus(connected, message) {
 function initFirebaseIfPossible() {
   const config = loadFirebaseConfigFromStorage();
   if (!config || !config.apiKey || !config.projectId || !config.appId || typeof firebase === "undefined") {
-    firebaseState = { app: null, db: null, connected: false };
+    firebaseState = { app: null, db: null, auth: null, storage: null, connected: false };
     updateFirebaseStatus(false, "Not connected");
     return false;
   }
@@ -800,12 +800,14 @@ function initFirebaseIfPossible() {
     let app;
     try { app = firebase.app(appName); } catch { app = firebase.initializeApp(config, appName); }
     const db = app.firestore();
-    firebaseState = { app, db, connected: true };
+    const auth = typeof app.auth === "function" ? app.auth() : null;
+    const storage = typeof app.storage === "function" ? app.storage() : null;
+    firebaseState = { app, db, auth, storage, connected: true };
     updateFirebaseStatus(true, "Connected");
     return true;
   } catch (error) {
     console.error(error);
-    firebaseState = { app: null, db: null, connected: false };
+    firebaseState = { app: null, db: null, auth: null, storage: null, connected: false };
     updateFirebaseStatus(false, "Connection failed");
     return false;
   }
@@ -1159,6 +1161,228 @@ function lossStorageKey(date = lossState.currentDate){
 function cloneDeep(obj){
   return JSON.parse(JSON.stringify(obj));
 }
+
+function bytesToLabel(size){
+  const value = Number(size || 0);
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(2)} MB`;
+}
+function safeStorageName(name){
+  return String(name || "image")
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60) || "image";
+}
+async function ensureFirebaseAuthReady(){
+  if (!firebaseState.connected) return true;
+  if (!firebaseState.auth) return true;
+  if (firebaseState.auth.currentUser) return firebaseState.auth.currentUser;
+  return firebaseState.auth.signInAnonymously().then(() => firebaseState.auth.currentUser);
+}
+function fileToDataUrl(file){
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+async function compressImageFile(file, options = {}){
+  const maxWidth = Number(options.maxWidth || 1600);
+  const maxHeight = Number(options.maxHeight || 1600);
+  const quality = Number(options.quality || 0.8);
+
+  const dataUrl = await fileToDataUrl(file);
+  const image = new Image();
+
+  await new Promise((resolve, reject) => {
+    image.onload = resolve;
+    image.onerror = reject;
+    image.src = dataUrl;
+  });
+
+  let width = image.naturalWidth || image.width;
+  let height = image.naturalHeight || image.height;
+  const ratio = Math.min(maxWidth / width, maxHeight / height, 1);
+
+  width = Math.max(1, Math.round(width * ratio));
+  height = Math.max(1, Math.round(height * ratio));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, width, height);
+  ctx.drawImage(image, 0, 0, width, height);
+
+  const blob = await new Promise((resolve, reject) => {
+    canvas.toBlob((result) => {
+      if (result) resolve(result);
+      else reject(new Error("Unable to compress image"));
+    }, "image/jpeg", quality);
+  });
+
+  return { blob, width, height, size: blob.size };
+}
+async function uploadCompressedImagesToStorage(moduleKey, reportDate, files){
+  if (!firebaseState.connected || !firebaseState.storage) {
+    throw new Error("Firebase Storage not connected");
+  }
+
+  await ensureFirebaseAuthReady();
+
+  const uploaded = [];
+  for (const file of Array.from(files || [])) {
+    const compressed = await compressImageFile(file, { maxWidth: 1600, maxHeight: 1600, quality: 0.78 });
+    const storagePath = `report-images/${moduleKey}/${reportDate}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safeStorageName(file.name)}.jpg`;
+    const storageRef = firebaseState.storage.ref().child(storagePath);
+
+    await storageRef.put(compressed.blob, {
+      contentType: "image/jpeg",
+      customMetadata: {
+        originalName: file.name || "image"
+      }
+    });
+
+    const url = await storageRef.getDownloadURL();
+    uploaded.push({
+      id: crypto.randomUUID(),
+      name: file.name || "image.jpg",
+      url,
+      storagePath,
+      size: compressed.size,
+      width: compressed.width,
+      height: compressed.height,
+      uploadedAt: new Date().toISOString()
+    });
+  }
+  return uploaded;
+}
+async function deleteStorageFileIfPossible(storagePath){
+  if (!storagePath || !firebaseState.connected || !firebaseState.storage) return;
+  try {
+    await ensureFirebaseAuthReady();
+    await firebaseState.storage.ref().child(storagePath).delete();
+  } catch (error) {
+    console.warn("Unable to delete storage file", storagePath, error);
+  }
+}
+async function cleanupAddedImages(currentImages = [], snapshotImages = []){
+  const snapshotIds = new Set((snapshotImages || []).map(img => img.id));
+  for (const image of currentImages || []) {
+    if (!snapshotIds.has(image.id)) {
+      await deleteStorageFileIfPossible(image.storagePath);
+    }
+  }
+}
+function renderReportImageGallery(images, prefix, editMode){
+  const list = Array.isArray(images) ? images : [];
+  if (!list.length) {
+    return '<div class="empty-media">ยังไม่มีรูปภาพ</div>';
+  }
+  return `
+    <div class="report-image-grid">
+      ${list.map(image => `
+        <div class="report-image-card">
+          <button type="button" class="report-image-thumb" data-view-image="${escapeHtml(image.url)}">
+            <img src="${escapeHtml(image.url)}" alt="${escapeHtml(image.name || "image")}" />
+          </button>
+          <div class="report-image-meta">
+            <div class="report-image-name">${escapeHtml(image.name || "image")}</div>
+            <div class="report-image-sub">${bytesToLabel(image.size)} • ${Number(image.width || 0)}×${Number(image.height || 0)}</div>
+          </div>
+          <div class="report-image-actions">
+            <button type="button" class="mini-btn" data-view-image="${escapeHtml(image.url)}">View</button>
+            ${editMode ? `<button type="button" class="mini-btn danger" data-${prefix}-remove-image="${escapeHtml(image.id)}">Remove</button>` : ""}
+          </div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+function openImageUrl(url){
+  if (!url) return;
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+function reportWindowBase(title, bodyHtml){
+  const popup = window.open("", "_blank");
+  if (!popup) {
+    alert("เบราว์เซอร์บล็อกหน้าต่างใหม่ กรุณาอนุญาต pop-up ก่อน");
+    return;
+  }
+  popup.document.open();
+  popup.document.write(`<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <title>${title}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <style>
+    :root{--line:#e8dccb;--text:#1f2430;--muted:#6d7485;--panel:#ffffff;--sand:#f4e8d3;--mint:#e3f3ec;--sky:#e7f0ff;}
+    *{box-sizing:border-box}
+    body{margin:0;font-family:"Inter",system-ui,sans-serif;background:#f6f2ea;color:var(--text)}
+    .toolbar{position:sticky;top:0;z-index:4;background:#ffffff;border-bottom:1px solid var(--line);padding:14px 18px;display:flex;gap:10px;justify-content:flex-end}
+    .toolbar button{border:none;border-radius:12px;padding:10px 14px;font-weight:800;background:#1f4de0;color:#fff;cursor:pointer}
+    .toolbar button.secondary{background:#f2eadf;color:#5e5346}
+    .sheet{max-width:1240px;margin:24px auto;padding:0 18px 28px}
+    .hero{background:#fff;border:1px solid var(--line);border-radius:28px;padding:22px 24px;box-shadow:0 12px 30px rgba(0,0,0,.06)}
+    .eyebrow{display:inline-block;padding:7px 11px;border-radius:999px;background:#fff2d8;color:#9c6900;font-size:.74rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase}
+    h1{margin:12px 0 8px;font-size:2.3rem;line-height:1.05}
+    .grid{display:grid;grid-template-columns:repeat(3,minmax(180px,1fr));gap:14px;margin-top:18px}
+    .stat{padding:16px 18px;border-radius:22px;border:1px solid var(--line)}
+    .sand{background:var(--sand)} .mint{background:var(--mint)} .sky{background:var(--sky)}
+    .stat .label{font-size:.8rem;letter-spacing:.06em;text-transform:uppercase;color:#6f5f4e}
+    .stat .value{margin-top:6px;font-size:1.7rem;font-weight:900}
+    .block{background:#fff;border:1px solid var(--line);border-radius:24px;padding:18px;margin-top:18px}
+    .meta-grid{display:grid;grid-template-columns:2fr 1fr;gap:14px}
+    .meta-field{padding:12px 14px;border-radius:16px;background:#faf6ef;border:1px solid var(--line)}
+    .meta-field .label{font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+    .meta-field .value{margin-top:6px;font-weight:700}
+    table{width:100%;border-collapse:collapse}
+    th,td{border:1px solid var(--line);padding:10px 10px;vertical-align:top}
+    th{background:#f4ece0;font-size:.82rem;text-transform:uppercase;letter-spacing:.04em}
+    td.num{text-align:right}
+    .totals{font-weight:800;background:#fbf6ee}
+    .images{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+    .image-card{border:1px solid var(--line);border-radius:18px;overflow:hidden;background:#fff}
+    .image-card img{display:block;width:100%;height:180px;object-fit:cover;background:#f3f3f3}
+    .image-meta{padding:10px 12px}
+    .image-name{font-weight:700}
+    .image-sub{margin-top:4px;color:var(--muted);font-size:.85rem}
+    .sign-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+    .sign-item{padding:12px 14px;border:1px solid var(--line);border-radius:16px;background:#fffdf9}
+    .sign-item .label{font-size:.8rem;color:var(--muted);text-transform:uppercase}
+    .sign-item .value{margin-top:18px;min-height:28px;font-weight:700;border-top:1px dashed #d7cab7;padding-top:10px}
+    .note-box{padding:14px 16px;border-radius:16px;background:#faf6ef;border:1px solid var(--line);line-height:1.7}
+    @media print{
+      body{background:#ffffff}
+      .toolbar{display:none}
+      .sheet{max-width:none;margin:0;padding:0}
+      .hero,.block{box-shadow:none}
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <button onclick="window.print()">Print / Save PDF</button>
+    <button class="secondary" onclick="window.close()">Close</button>
+  </div>
+  <div class="sheet">${bodyHtml}</div>
+</body>
+</html>`);
+  popup.document.close();
+}
+function commonImageUploadError(error){
+  console.error(error);
+  alert("อัปโหลดรูปไม่สำเร็จ กรุณาตรวจสอบ Firebase Storage, Storage Rules และการเปิด Anonymous Auth หากโปรเจกต์ตั้งให้ต้องล็อกอิน");
+}
+
 function createEmptyLossLine(index){
   return {
     item: index + 1,
@@ -1177,6 +1401,7 @@ function createEmptyLossReport(date = lossState.currentDate){
     reportDate: date,
     lines: Array.from({ length: LOSS_TEMPLATE_ROWS }, (_, i) => createEmptyLossLine(i)),
     pictureNote: "",
+    images: [],
     preparedBy: "",
     reportedBy: "",
     checkedBy: "",
@@ -1197,6 +1422,7 @@ function mergeLossReport(base, incoming){
         item: i + 1
       }));
     }
+    merged.images = Array.isArray(incoming.images) ? incoming.images : [];
   }
   return merged;
 }
@@ -1283,10 +1509,119 @@ function lossExportRows(){
       reasons: line.reasons,
       recoverySellingAt: line.recoverySelling,
       recoverySellingExVatTotal: totals.sellingExVat,
-      recoverySellingIncVatTotal: totals.sellingIncVat
+      recoverySellingIncVatTotal: totals.sellingIncVat,
+      imageCount: (lossState.reportData.images || []).length
     };
   });
 }
+
+function exportLossReportDocument(){
+  const totals = lossTotals();
+  const bodyHtml = `
+    <section class="hero">
+      <div class="eyebrow">Laya Resort Phuket</div>
+      <h1>Loss / Damage Report</h1>
+      <div class="meta-grid">
+        <div class="meta-field">
+          <div class="label">Outlet / Dept.</div>
+          <div class="value">${escapeHtml(lossState.reportData.outletDept || "-")}</div>
+        </div>
+        <div class="meta-field">
+          <div class="label">Report Date</div>
+          <div class="value">${escapeHtml(lossState.currentDate)}</div>
+        </div>
+      </div>
+      <div class="grid">
+        <div class="stat sand"><div class="label">Recovery Cost</div><div class="value">${formatNumber(totals.cost)}</div></div>
+        <div class="stat mint"><div class="label">Selling Excl. VAT</div><div class="value">${formatNumber(totals.sellingExVat)}</div></div>
+        <div class="stat sky"><div class="label">Selling Incl. VAT</div><div class="value">${formatNumber(totals.sellingIncVat)}</div></div>
+      </div>
+    </section>
+
+    <section class="block">
+      <table>
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th>Article Number</th>
+            <th>Description</th>
+            <th>Unit</th>
+            <th>Qty.</th>
+            <th>Recovery Cost @</th>
+            <th>Total</th>
+            <th>Reasons</th>
+            <th>Recovery Selling @</th>
+            <th>Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${lossState.reportData.lines.map((line, index) => {
+            const row = lossLineTotals(line);
+            return `
+              <tr>
+                <td>${index + 1}</td>
+                <td>${escapeHtml(line.articleNumber || "")}</td>
+                <td>${escapeHtml(line.description || "")}</td>
+                <td>${escapeHtml(line.unit || "")}</td>
+                <td class="num">${formatNumber(line.qty || 0)}</td>
+                <td class="num">${formatNumber(line.recoveryCost || 0)}</td>
+                <td class="num">${formatNumber(row.costTotal)}</td>
+                <td>${escapeHtml(line.reasons || "")}</td>
+                <td class="num">${formatNumber(line.recoverySelling || 0)}</td>
+                <td class="num">${formatNumber(row.sellingExVat)}</td>
+              </tr>
+            `;
+          }).join("")}
+          <tr class="totals">
+            <td colspan="6">Total Recovery Cost</td>
+            <td class="num">${formatNumber(totals.cost)}</td>
+            <td colspan="2">Total Recovery Selling (Excl. VAT)</td>
+            <td class="num">${formatNumber(totals.sellingExVat)}</td>
+          </tr>
+          <tr class="totals">
+            <td colspan="9">Total Inclusive VAT</td>
+            <td class="num">${formatNumber(totals.sellingIncVat)}</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="block">
+      <h3>Picture / Evidence Note</h3>
+      <div class="note-box">${escapeHtml(lossState.reportData.pictureNote || "-").replace(/\n/g, "<br>")}</div>
+    </section>
+
+    <section class="block">
+      <h3>Attached Photos</h3>
+      ${(lossState.reportData.images || []).length ? `
+        <div class="images">
+          ${(lossState.reportData.images || []).map(image => `
+            <div class="image-card">
+              <img src="${escapeHtml(image.url)}" alt="${escapeHtml(image.name || "image")}" />
+              <div class="image-meta">
+                <div class="image-name">${escapeHtml(image.name || "image")}</div>
+                <div class="image-sub">${bytesToLabel(image.size)} • ${Number(image.width || 0)}×${Number(image.height || 0)}</div>
+              </div>
+            </div>
+          `).join("")}
+        </div>` : `<div class="note-box">No attached photos</div>`}
+    </section>
+
+    <section class="block">
+      <h3>Approval / Signature</h3>
+      <div class="sign-grid">
+        <div class="sign-item"><div class="label">Prepared by</div><div class="value">${escapeHtml(lossState.reportData.preparedBy || "")}</div></div>
+        <div class="sign-item"><div class="label">Reported by</div><div class="value">${escapeHtml(lossState.reportData.reportedBy || "")}</div></div>
+        <div class="sign-item"><div class="label">Checked by</div><div class="value">${escapeHtml(lossState.reportData.checkedBy || "")}</div></div>
+        <div class="sign-item"><div class="label">Verified by</div><div class="value">${escapeHtml(lossState.reportData.verifiedBy || "")}</div></div>
+        <div class="sign-item"><div class="label">Acknowledge by</div><div class="value">${escapeHtml(lossState.reportData.acknowledgeBy || "")}</div></div>
+        <div class="sign-item"><div class="label">Approved by</div><div class="value">${escapeHtml(lossState.reportData.approvedBy || "")}</div></div>
+      </div>
+    </section>
+  `;
+  reportWindowBase(`Loss-Damage-${lossState.currentDate}`, bodyHtml);
+}
+
 function lossHeaderHtml(){
   const totals = lossTotals();
   return `
@@ -1334,6 +1669,7 @@ function lossToolbarHtml(){
         <button class="btn ${lossState.editMode ? "btn-soft" : "primary"}" id="lossEditBtn">EDIT</button>
         <button class="btn ${lossState.editMode ? "primary" : "btn-soft"}" id="lossSaveBtn">SAVE</button>
         <button class="btn ${lossState.editMode ? "" : "btn-soft"}" id="lossCancelBtn">CANCEL</button>
+        <button class="btn" id="lossExportReportBtn">Export Report</button>
         <button class="btn" id="lossExportBtn">Export CSV</button>
         <button class="btn danger" id="lossClearBtn">Clear Report</button>
       </div>
@@ -1419,7 +1755,15 @@ function renderLossDamageModule(){
 
         <div class="loss-bottom-grid">
           <div class="panel loss-evidence-panel">
-            <h4>Picture / Evidence Note</h4>
+            <h4>Picture / Evidence</h4>
+            <div class="upload-toolbar">
+              <label class="upload-label ${lossState.editMode ? "" : "disabled"}">
+                <span>Upload Photos</span>
+                <input type="file" id="lossPhotoInput" accept="image/*" multiple ${lossState.editMode ? "" : "disabled"} />
+              </label>
+              <div class="upload-hint">อัปได้หลายรูป • ระบบจะย่อขนาดก่อนอัปขึ้น Firebase Storage ทุกครั้ง</div>
+            </div>
+            ${renderReportImageGallery(lossState.reportData.images, "loss", lossState.editMode)}
             <textarea id="lossPictureNote" class="loss-note-area" ${lossState.editMode ? "" : "disabled"} placeholder="บันทึกข้อมูลภาพประกอบหรือหลักฐานเพิ่มเติม">${escapeHtml(lossState.reportData.pictureNote || "")}</textarea>
           </div>
           <div class="panel loss-sign-panel">
@@ -1460,10 +1804,11 @@ function refreshLossLiveTotals(){
   if (statSale) statSale.textContent = formatNumber(totals.sellingIncVat);
 }
 function bindLossDamageEvents(){
-  document.getElementById("backBtn")?.remove(); // just in case
+  document.getElementById("backBtn")?.remove();
   const dateInput = document.getElementById("lossDateInput");
   const outletDept = document.getElementById("lossOutletDept");
   const pictureNote = document.getElementById("lossPictureNote");
+  const photoInput = document.getElementById("lossPhotoInput");
   const signMap = {
     preparedBy: document.getElementById("lossPreparedBy"),
     reportedBy: document.getElementById("lossReportedBy"),
@@ -1509,10 +1854,17 @@ function bindLossDamageEvents(){
       alert("ยังไม่มีการแก้ไขให้ยกเลิก");
       return;
     }
+    const currentImages = cloneDeep(lossState.reportData.images || []);
+    const snapshotImages = cloneDeep((lossState.savedSnapshot && lossState.savedSnapshot.images) || []);
     lossState.reportData = lossState.savedSnapshot ? cloneDeep(lossState.savedSnapshot) : createEmptyLossReport(lossState.currentDate);
     lossState.editMode = false;
     lossState.dirty = false;
     renderLossDamageModule();
+    cleanupAddedImages(currentImages, snapshotImages).catch(console.error);
+  });
+
+  document.getElementById("lossExportReportBtn").addEventListener("click", () => {
+    exportLossReportDocument();
   });
 
   document.getElementById("lossExportBtn").addEventListener("click", () => {
@@ -1521,12 +1873,14 @@ function bindLossDamageEvents(){
 
   document.getElementById("lossClearBtn").addEventListener("click", () => {
     if (!confirm(`ลบข้อมูลของรายงานวันที่ ${lossState.currentDate} ?`)) return;
+    const oldImages = cloneDeep(lossState.reportData.images || []);
     lossState.reportData = createEmptyLossReport(lossState.currentDate);
     lossState.savedSnapshot = cloneDeep(lossState.reportData);
     lossState.editMode = false;
     lossState.dirty = false;
     saveLossReport();
     renderLossDamageModule();
+    oldImages.forEach(image => deleteStorageFileIfPossible(image.storagePath));
   });
 
   if (outletDept) {
@@ -1563,6 +1917,47 @@ function bindLossDamageEvents(){
     });
   });
 
+  if (photoInput) {
+    photoInput.addEventListener("change", async (event) => {
+      const files = Array.from(event.target.files || []);
+      event.target.value = "";
+      if (!files.length) return;
+      if (!lossState.editMode) {
+        alert("กรุณากด EDIT ก่อนอัปโหลดรูป");
+        return;
+      }
+      try {
+        const uploaded = await uploadCompressedImagesToStorage("loss-damage", lossState.currentDate, files);
+        lossState.reportData.images = [...(lossState.reportData.images || []), ...uploaded];
+        lossState.dirty = true;
+        renderLossDamageModule();
+      } catch (error) {
+        commonImageUploadError(error);
+      }
+    });
+  }
+
+  document.querySelectorAll("[data-view-image]").forEach(btn => {
+    btn.addEventListener("click", () => openImageUrl(btn.dataset.viewImage));
+  });
+
+  document.querySelectorAll("[data-loss-remove-image]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      if (!lossState.editMode) {
+        alert("กรุณากด EDIT ก่อนลบรูป");
+        return;
+      }
+      const imageId = btn.dataset.lossRemoveImage;
+      const target = (lossState.reportData.images || []).find(image => image.id === imageId);
+      lossState.reportData.images = (lossState.reportData.images || []).filter(image => image.id !== imageId);
+      lossState.dirty = true;
+      renderLossDamageModule();
+      if (target && target.storagePath) {
+        deleteStorageFileIfPossible(target.storagePath);
+      }
+    });
+  });
+
   refreshLossLiveTotals();
 }
 
@@ -1595,6 +1990,8 @@ function createEmptyBreakageReport(date = breakageState.currentDate){
     outletDept: "",
     reportDate: date,
     lines: Array.from({ length: BREAKAGE_TEMPLATE_ROWS }, (_, i) => createEmptyBreakageLine(i)),
+    pictureNote: "",
+    images: [],
     preparedBy: "",
     reportedBy: "",
     checkedBy: "",
@@ -1615,6 +2012,7 @@ function mergeBreakageReport(base, incoming){
         item: i + 1
       }));
     }
+    merged.images = Array.isArray(incoming.images) ? incoming.images : [];
   }
   return merged;
 }
@@ -1686,9 +2084,106 @@ function breakageExportRows(){
     qty: line.qty,
     recoveryCostAt: line.recoveryCost,
     total: breakageLineTotal(line),
-    reasons: line.reasons
+    reasons: line.reasons,
+    imageCount: (breakageState.reportData.images || []).length
   }));
 }
+
+function exportBreakageReportDocument(){
+  const totals = breakageTotals();
+  const bodyHtml = `
+    <section class="hero">
+      <div class="eyebrow">Laya Resort Phuket</div>
+      <h1>Breakage / Spoiled Report</h1>
+      <div class="meta-grid">
+        <div class="meta-field">
+          <div class="label">Outlet / Dept.</div>
+          <div class="value">${escapeHtml(breakageState.reportData.outletDept || "-")}</div>
+        </div>
+        <div class="meta-field">
+          <div class="label">Report Date</div>
+          <div class="value">${escapeHtml(breakageState.currentDate)}</div>
+        </div>
+      </div>
+      <div class="grid">
+        <div class="stat sand"><div class="label">Reports Saved</div><div class="value">${formatNumber(breakageReportCount())}</div></div>
+        <div class="stat mint"><div class="label">Total Qty</div><div class="value">${formatNumber(totals.qty)}</div></div>
+        <div class="stat sky"><div class="label">Recovery Cost</div><div class="value">${formatNumber(totals.cost)}</div></div>
+      </div>
+    </section>
+
+    <section class="block">
+      <table>
+        <thead>
+          <tr>
+            <th>No.</th>
+            <th>Product Code</th>
+            <th>Description</th>
+            <th>Unit</th>
+            <th>Qty.</th>
+            <th>Recovery Cost @</th>
+            <th>Total</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${breakageState.reportData.lines.map((line, index) => `
+            <tr>
+              <td>${index + 1}</td>
+              <td>${escapeHtml(line.productCode || "")}</td>
+              <td>${escapeHtml(line.description || "")}</td>
+              <td>${escapeHtml(line.unit || "")}</td>
+              <td class="num">${formatNumber(line.qty || 0)}</td>
+              <td class="num">${formatNumber(line.recoveryCost || 0)}</td>
+              <td class="num">${formatNumber(breakageLineTotal(line))}</td>
+              <td>${escapeHtml(line.reasons || "")}</td>
+            </tr>
+          `).join("")}
+          <tr class="totals">
+            <td colspan="6">Total Recovery Cost</td>
+            <td class="num">${formatNumber(totals.cost)}</td>
+            <td></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="block">
+      <h3>Picture / Evidence Note</h3>
+      <div class="note-box">${escapeHtml(breakageState.reportData.pictureNote || "-").replace(/\n/g, "<br>")}</div>
+    </section>
+
+    <section class="block">
+      <h3>Attached Photos</h3>
+      ${(breakageState.reportData.images || []).length ? `
+        <div class="images">
+          ${(breakageState.reportData.images || []).map(image => `
+            <div class="image-card">
+              <img src="${escapeHtml(image.url)}" alt="${escapeHtml(image.name || "image")}" />
+              <div class="image-meta">
+                <div class="image-name">${escapeHtml(image.name || "image")}</div>
+                <div class="image-sub">${bytesToLabel(image.size)} • ${Number(image.width || 0)}×${Number(image.height || 0)}</div>
+              </div>
+            </div>
+          `).join("")}
+        </div>` : `<div class="note-box">No attached photos</div>`}
+    </section>
+
+    <section class="block">
+      <h3>Approval / Signature</h3>
+      <div class="sign-grid">
+        <div class="sign-item"><div class="label">Prepared by</div><div class="value">${escapeHtml(breakageState.reportData.preparedBy || "")}</div></div>
+        <div class="sign-item"><div class="label">Checked by</div><div class="value">${escapeHtml(breakageState.reportData.checkedBy || "")}</div></div>
+        <div class="sign-item"><div class="label">Reported by</div><div class="value">${escapeHtml(breakageState.reportData.reportedBy || "")}</div></div>
+        <div class="sign-item"><div class="label">Verified by</div><div class="value">${escapeHtml(breakageState.reportData.verifiedBy || "")}</div></div>
+        <div class="sign-item"><div class="label">Acknowledge by</div><div class="value">${escapeHtml(breakageState.reportData.acknowledgeBy || "")}</div></div>
+        <div class="sign-item"><div class="label">Approved by</div><div class="value">${escapeHtml(breakageState.reportData.approvedBy || "")}</div></div>
+      </div>
+    </section>
+  `;
+  reportWindowBase(`Breakage-Spoiled-${breakageState.currentDate}`, bodyHtml);
+}
+
 function breakageHeaderHtml(){
   const totals = breakageTotals();
   return `
@@ -1736,6 +2231,7 @@ function breakageToolbarHtml(){
         <button class="btn ${breakageState.editMode ? "btn-soft" : "primary"}" id="breakageEditBtn">EDIT</button>
         <button class="btn ${breakageState.editMode ? "primary" : "btn-soft"}" id="breakageSaveBtn">SAVE</button>
         <button class="btn ${breakageState.editMode ? "" : "btn-soft"}" id="breakageCancelBtn">CANCEL</button>
+        <button class="btn" id="breakageExportReportBtn">Export Report</button>
         <button class="btn" id="breakageExportBtn">Export CSV</button>
         <button class="btn danger" id="breakageClearBtn">Clear Report</button>
       </div>
@@ -1824,38 +2320,53 @@ function renderBreakageSpoiledModule(){
           </table>
         </div>
 
-        <div class="breakage-sign-grid">
-          <div class="breakage-sign-item">
-            <label>Prepared by :</label>
-            <input class="breakage-sign-input" id="breakagePreparedBy" value="${escapeHtml(breakageState.reportData.preparedBy || "")}" ${breakageState.editMode ? "" : "disabled"} />
-            <div class="breakage-role-label">Prepared by</div>
-          </div>
-          <div class="breakage-sign-item">
-            <label>Checked by :</label>
-            <input class="breakage-sign-input" id="breakageCheckedBy" value="${escapeHtml(breakageState.reportData.checkedBy || "")}" ${breakageState.editMode ? "" : "disabled"} />
-            <div class="breakage-role-label">Cost Controller</div>
-          </div>
-
-          <div class="breakage-sign-item">
-            <label>Reported by :</label>
-            <input class="breakage-sign-input" id="breakageReportedBy" value="${escapeHtml(breakageState.reportData.reportedBy || "")}" ${breakageState.editMode ? "" : "disabled"} />
-            <div class="breakage-role-label">Department Head</div>
-          </div>
-          <div class="breakage-sign-item">
-            <label>Verified by :</label>
-            <input class="breakage-sign-input" id="breakageVerifiedBy" value="${escapeHtml(breakageState.reportData.verifiedBy || "")}" ${breakageState.editMode ? "" : "disabled"} />
-            <div class="breakage-role-label">Cluster Financial Controller</div>
+        <div class="breakage-bottom-grid">
+          <div class="panel loss-evidence-panel">
+            <h4>Picture / Evidence</h4>
+            <div class="upload-toolbar">
+              <label class="upload-label ${breakageState.editMode ? "" : "disabled"}">
+                <span>Upload Photos</span>
+                <input type="file" id="breakagePhotoInput" accept="image/*" multiple ${breakageState.editMode ? "" : "disabled"} />
+              </label>
+              <div class="upload-hint">อัปได้หลายรูป • ระบบจะย่อขนาดก่อนอัปขึ้น Firebase Storage ทุกครั้ง</div>
+            </div>
+            ${renderReportImageGallery(breakageState.reportData.images, "breakage", breakageState.editMode)}
+            <textarea id="breakagePictureNote" class="loss-note-area" ${breakageState.editMode ? "" : "disabled"} placeholder="บันทึกข้อมูลภาพประกอบหรือหลักฐานเพิ่มเติม">${escapeHtml(breakageState.reportData.pictureNote || "")}</textarea>
           </div>
 
-          <div class="breakage-sign-item">
-            <label>Acknowlege by :</label>
-            <input class="breakage-sign-input" id="breakageAcknowledgeBy" value="${escapeHtml(breakageState.reportData.acknowledgeBy || "")}" ${breakageState.editMode ? "" : "disabled"} />
-            <div class="breakage-role-label">Hotel Manager</div>
-          </div>
-          <div class="breakage-sign-item">
-            <label>Approved by :</label>
-            <input class="breakage-sign-input" id="breakageApprovedBy" value="${escapeHtml(breakageState.reportData.approvedBy || "")}" ${breakageState.editMode ? "" : "disabled"} />
-            <div class="breakage-role-label">Cluster General Manager</div>
+          <div class="breakage-sign-grid">
+            <div class="breakage-sign-item">
+              <label>Prepared by :</label>
+              <input class="breakage-sign-input" id="breakagePreparedBy" value="${escapeHtml(breakageState.reportData.preparedBy || "")}" ${breakageState.editMode ? "" : "disabled"} />
+              <div class="breakage-role-label">Prepared by</div>
+            </div>
+            <div class="breakage-sign-item">
+              <label>Checked by :</label>
+              <input class="breakage-sign-input" id="breakageCheckedBy" value="${escapeHtml(breakageState.reportData.checkedBy || "")}" ${breakageState.editMode ? "" : "disabled"} />
+              <div class="breakage-role-label">Cost Controller</div>
+            </div>
+
+            <div class="breakage-sign-item">
+              <label>Reported by :</label>
+              <input class="breakage-sign-input" id="breakageReportedBy" value="${escapeHtml(breakageState.reportData.reportedBy || "")}" ${breakageState.editMode ? "" : "disabled"} />
+              <div class="breakage-role-label">Department Head</div>
+            </div>
+            <div class="breakage-sign-item">
+              <label>Verified by :</label>
+              <input class="breakage-sign-input" id="breakageVerifiedBy" value="${escapeHtml(breakageState.reportData.verifiedBy || "")}" ${breakageState.editMode ? "" : "disabled"} />
+              <div class="breakage-role-label">Cluster Financial Controller</div>
+            </div>
+
+            <div class="breakage-sign-item">
+              <label>Acknowlege by :</label>
+              <input class="breakage-sign-input" id="breakageAcknowledgeBy" value="${escapeHtml(breakageState.reportData.acknowledgeBy || "")}" ${breakageState.editMode ? "" : "disabled"} />
+              <div class="breakage-role-label">Hotel Manager</div>
+            </div>
+            <div class="breakage-sign-item">
+              <label>Approved by :</label>
+              <input class="breakage-sign-input" id="breakageApprovedBy" value="${escapeHtml(breakageState.reportData.approvedBy || "")}" ${breakageState.editMode ? "" : "disabled"} />
+              <div class="breakage-role-label">Cluster General Manager</div>
+            </div>
           </div>
         </div>
       </div>
@@ -1864,6 +2375,8 @@ function renderBreakageSpoiledModule(){
 
   const dateInput = document.getElementById("breakageDateInput");
   const outletDept = document.getElementById("breakageOutletDept");
+  const pictureNote = document.getElementById("breakagePictureNote");
+  const photoInput = document.getElementById("breakagePhotoInput");
   const signMap = {
     preparedBy: document.getElementById("breakagePreparedBy"),
     reportedBy: document.getElementById("breakageReportedBy"),
@@ -1920,10 +2433,17 @@ function renderBreakageSpoiledModule(){
       alert("ยังไม่มีการแก้ไขให้ยกเลิก");
       return;
     }
+    const currentImages = cloneDeep(breakageState.reportData.images || []);
+    const snapshotImages = cloneDeep((breakageState.savedSnapshot && breakageState.savedSnapshot.images) || []);
     breakageState.reportData = breakageState.savedSnapshot ? cloneDeep(breakageState.savedSnapshot) : createEmptyBreakageReport(breakageState.currentDate);
     breakageState.editMode = false;
     breakageState.dirty = false;
     renderBreakageSpoiledModule();
+    cleanupAddedImages(currentImages, snapshotImages).catch(console.error);
+  });
+
+  document.getElementById("breakageExportReportBtn").addEventListener("click", () => {
+    exportBreakageReportDocument();
   });
 
   document.getElementById("breakageExportBtn").addEventListener("click", () => {
@@ -1932,17 +2452,25 @@ function renderBreakageSpoiledModule(){
 
   document.getElementById("breakageClearBtn").addEventListener("click", () => {
     if (!confirm(`ลบข้อมูลของรายงานวันที่ ${breakageState.currentDate} ?`)) return;
+    const oldImages = cloneDeep(breakageState.reportData.images || []);
     breakageState.reportData = createEmptyBreakageReport(breakageState.currentDate);
     breakageState.savedSnapshot = cloneDeep(breakageState.reportData);
     breakageState.editMode = false;
     breakageState.dirty = false;
     saveBreakageReport();
     renderBreakageSpoiledModule();
+    oldImages.forEach(image => deleteStorageFileIfPossible(image.storagePath));
   });
 
   if (outletDept){
     outletDept.addEventListener("input", (event) => {
       breakageState.reportData.outletDept = event.target.value;
+      breakageState.dirty = true;
+    });
+  }
+  if (pictureNote){
+    pictureNote.addEventListener("input", (event) => {
+      breakageState.reportData.pictureNote = event.target.value;
       breakageState.dirty = true;
     });
   }
@@ -1965,6 +2493,47 @@ function renderBreakageSpoiledModule(){
       breakageState.reportData.lines[lineIndex][field] = value;
       breakageState.dirty = true;
       refreshBreakageLiveTotals();
+    });
+  });
+
+  if (photoInput) {
+    photoInput.addEventListener("change", async (event) => {
+      const files = Array.from(event.target.files || []);
+      event.target.value = "";
+      if (!files.length) return;
+      if (!breakageState.editMode) {
+        alert("กรุณากด EDIT ก่อนอัปโหลดรูป");
+        return;
+      }
+      try {
+        const uploaded = await uploadCompressedImagesToStorage("breakage-spoiled", breakageState.currentDate, files);
+        breakageState.reportData.images = [...(breakageState.reportData.images || []), ...uploaded];
+        breakageState.dirty = true;
+        renderBreakageSpoiledModule();
+      } catch (error) {
+        commonImageUploadError(error);
+      }
+    });
+  }
+
+  document.querySelectorAll("[data-view-image]").forEach(btn => {
+    btn.addEventListener("click", () => openImageUrl(btn.dataset.viewImage));
+  });
+
+  document.querySelectorAll("[data-breakage-remove-image]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      if (!breakageState.editMode) {
+        alert("กรุณากด EDIT ก่อนลบรูป");
+        return;
+      }
+      const imageId = btn.dataset.breakageRemoveImage;
+      const target = (breakageState.reportData.images || []).find(image => image.id === imageId);
+      breakageState.reportData.images = (breakageState.reportData.images || []).filter(image => image.id !== imageId);
+      breakageState.dirty = true;
+      renderBreakageSpoiledModule();
+      if (target && target.storagePath) {
+        deleteStorageFileIfPossible(target.storagePath);
+      }
     });
   });
 
