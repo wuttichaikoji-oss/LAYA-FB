@@ -18,6 +18,8 @@ const MONTHS = [
 ];
 const LOSS_REPORT_PREFIX = "layaLossDamage::report::";
 const LOSS_TEMPLATE_ROWS = 28;
+const BREAKAGE_REPORT_PREFIX = "layaBreakageSpoiled::report::";
+const BREAKAGE_TEMPLATE_ROWS = 20;
 
 const modules = [
   {
@@ -304,6 +306,7 @@ function moduleCount(){
   modules.forEach(m => {
     if (m.id === "meal-plan-record") total += monthCountForCard();
     else if (m.id === "loss-damage") total += lossReportCount();
+    else if (m.id === "breakage-spoiled") total += breakageReportCount();
     else total += getRecords(m.id).length;
   });
   return total;
@@ -349,7 +352,9 @@ function renderDashboard(){
       ? monthCountForCard()
       : module.id === "loss-damage"
         ? lossReportCount()
-        : getRecords(module.id).length
+        : module.id === "breakage-spoiled"
+          ? breakageReportCount()
+          : getRecords(module.id).length
   }));
 
   dashboardView.innerHTML = `
@@ -1561,6 +1566,412 @@ function bindLossDamageEvents(){
   refreshLossLiveTotals();
 }
 
+
+/* Breakage / Spoiled custom report */
+let breakageState = {
+  currentDate: todayValue(),
+  reportData: null,
+  savedSnapshot: null,
+  editMode: false,
+  dirty: false
+};
+
+function breakageStorageKey(date = breakageState.currentDate){
+  return `${BREAKAGE_REPORT_PREFIX}${date}`;
+}
+function createEmptyBreakageLine(index){
+  return {
+    item: index + 1,
+    productCode: "",
+    description: "",
+    unit: "",
+    qty: "",
+    recoveryCost: "",
+    reasons: ""
+  };
+}
+function createEmptyBreakageReport(date = breakageState.currentDate){
+  return {
+    outletDept: "",
+    reportDate: date,
+    lines: Array.from({ length: BREAKAGE_TEMPLATE_ROWS }, (_, i) => createEmptyBreakageLine(i)),
+    preparedBy: "",
+    reportedBy: "",
+    checkedBy: "",
+    verifiedBy: "",
+    acknowledgeBy: "",
+    approvedBy: "",
+    updatedAt: new Date().toISOString()
+  };
+}
+function mergeBreakageReport(base, incoming){
+  const merged = cloneDeep(base);
+  if (incoming && typeof incoming === "object"){
+    Object.assign(merged, incoming);
+    if (Array.isArray(incoming.lines)){
+      merged.lines = Array.from({ length: BREAKAGE_TEMPLATE_ROWS }, (_, i) => ({
+        ...createEmptyBreakageLine(i),
+        ...(incoming.lines[i] || {}),
+        item: i + 1
+      }));
+    }
+  }
+  return merged;
+}
+function loadBreakageReport(date = breakageState.currentDate){
+  breakageState.currentDate = date;
+  try {
+    const raw = localStorage.getItem(breakageStorageKey(date));
+    if (!raw) {
+      breakageState.reportData = createEmptyBreakageReport(date);
+      breakageState.savedSnapshot = cloneDeep(breakageState.reportData);
+      return;
+    }
+    const parsed = JSON.parse(raw);
+    breakageState.reportData = mergeBreakageReport(createEmptyBreakageReport(date), parsed);
+    breakageState.savedSnapshot = cloneDeep(breakageState.reportData);
+  } catch (error) {
+    console.error(error);
+    breakageState.reportData = createEmptyBreakageReport(date);
+    breakageState.savedSnapshot = cloneDeep(breakageState.reportData);
+  }
+}
+function saveBreakageReport(){
+  breakageState.reportData.updatedAt = new Date().toISOString();
+  localStorage.setItem(breakageStorageKey(breakageState.currentDate), JSON.stringify(breakageState.reportData));
+}
+function breakageReportCount(){
+  let count = 0;
+  for (let i = 0; i < localStorage.length; i += 1){
+    const key = localStorage.key(i);
+    if (key && key.startsWith(BREAKAGE_REPORT_PREFIX)) count += 1;
+  }
+  return count;
+}
+function exportAllBreakageReports(){
+  const bundle = {};
+  for (let i = 0; i < localStorage.length; i += 1){
+    const key = localStorage.key(i);
+    if (!key || !key.startsWith(BREAKAGE_REPORT_PREFIX)) continue;
+    try {
+      bundle[key.replace(BREAKAGE_REPORT_PREFIX, "")] = JSON.parse(localStorage.getItem(key));
+    } catch (error) {
+      console.error(error);
+    }
+  }
+  return bundle;
+}
+function canDiscardBreakageEdits(){
+  if (!breakageState.editMode || !breakageState.dirty) return true;
+  return confirm("มีการแก้ไขที่ยังไม่ได้บันทึก ต้องการออกหรือเปลี่ยนวันที่ต่อหรือไม่?");
+}
+function breakageLineTotal(line){
+  return Number(line.qty || 0) * Number(line.recoveryCost || 0);
+}
+function breakageTotals(){
+  return breakageState.reportData.lines.reduce((acc, line) => {
+    acc.cost += breakageLineTotal(line);
+    acc.qty += Number(line.qty || 0);
+    return acc;
+  }, { cost: 0, qty: 0 });
+}
+function breakageExportRows(){
+  return breakageState.reportData.lines.map((line, index) => ({
+    reportDate: breakageState.currentDate,
+    outletDept: breakageState.reportData.outletDept,
+    item: index + 1,
+    productCode: line.productCode,
+    description: line.description,
+    unit: line.unit,
+    qty: line.qty,
+    recoveryCostAt: line.recoveryCost,
+    total: breakageLineTotal(line),
+    reasons: line.reasons
+  }));
+}
+function breakageHeaderHtml(){
+  const totals = breakageTotals();
+  return `
+    <div class="meal-header breakage-header">
+      <div class="meal-title">
+        <div class="eyebrow">Laya Resort Phuket</div>
+        <h3>LAYA BREAKAGE SPOILLED</h3>
+        <p>ออกแบบตามเอกสาร Breakage / Spoiled พร้อมโหมด EDIT / SAVE / CANCEL สำหรับใช้งานจริง</p>
+      </div>
+      <div class="meal-stat-grid">
+        <div class="stat-card sand">
+          <div class="label">Reports Saved</div>
+          <div class="value">${formatNumber(breakageReportCount())}</div>
+        </div>
+        <div class="stat-card mint">
+          <div class="label">Total Qty</div>
+          <div class="value" id="breakageStatQty">${formatNumber(totals.qty)}</div>
+        </div>
+        <div class="stat-card sky">
+          <div class="label">Recovery Cost</div>
+          <div class="value" id="breakageStatCost">${formatNumber(totals.cost)}</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+function breakageToolbarHtml(){
+  return `
+    <div class="panel">
+      <div class="breakage-toolbar-grid">
+        <div class="field compact-field">
+          <label>Report Date</label>
+          <input type="date" id="breakageDateInput" value="${breakageState.currentDate}" ${breakageState.editMode ? "disabled" : ""}/>
+        </div>
+        <div class="field compact-field">
+          <label>Status</label>
+          <input type="text" value="${breakageState.editMode ? "Editing" : "Locked"}" readonly />
+        </div>
+        <div class="field period-field">
+          <label>Report Key</label>
+          <input type="text" value="${breakageState.currentDate}" readonly />
+        </div>
+      </div>
+      <div class="meal-toolbar-actions">
+        <button class="btn ${breakageState.editMode ? "btn-soft" : "primary"}" id="breakageEditBtn">EDIT</button>
+        <button class="btn ${breakageState.editMode ? "primary" : "btn-soft"}" id="breakageSaveBtn">SAVE</button>
+        <button class="btn ${breakageState.editMode ? "" : "btn-soft"}" id="breakageCancelBtn">CANCEL</button>
+        <button class="btn" id="breakageExportBtn">Export CSV</button>
+        <button class="btn danger" id="breakageClearBtn">Clear Report</button>
+      </div>
+    </div>
+  `;
+}
+function refreshBreakageLiveTotals(){
+  const totals = breakageTotals();
+  const qtyEl = document.getElementById("breakageStatQty");
+  const costEl = document.getElementById("breakageStatCost");
+  if (qtyEl) qtyEl.textContent = formatNumber(totals.qty);
+  if (costEl) costEl.textContent = formatNumber(totals.cost);
+
+  document.querySelectorAll("[data-breakage-line-total]").forEach(el => {
+    const index = Number(el.dataset.breakageLineTotal);
+    el.textContent = formatNumber(breakageLineTotal(breakageState.reportData.lines[index]));
+  });
+  const totalEl = document.getElementById("breakageTotalCost");
+  if (totalEl) totalEl.textContent = formatNumber(totals.cost);
+}
+function renderBreakageSpoiledModule(){
+  if (!breakageState.reportData) loadBreakageReport(breakageState.currentDate);
+  dashboardView.classList.remove("active");
+  moduleView.classList.add("active");
+  renderNav("breakage-spoiled");
+  history.replaceState({}, "", "#breakage-spoiled");
+
+  moduleView.innerHTML = `
+    <div class="meal-shell">
+      ${breakageHeaderHtml()}
+      ${breakageToolbarHtml()}
+      <div class="panel breakage-report-card">
+        <div class="breakage-report-head">
+          <div class="breakage-title-stack">
+            <div class="breakage-resort">Laya Resort Phuket</div>
+            <div class="breakage-main-title">Breakage / Spoiled</div>
+          </div>
+          <div class="breakage-meta-row">
+            <div class="breakage-meta-field">
+              <span>OUTLET / DEPT.</span>
+              <input class="breakage-head-input" id="breakageOutletDept" value="${escapeHtml(breakageState.reportData.outletDept || "")}" ${breakageState.editMode ? "" : "disabled"} />
+            </div>
+            <div class="breakage-meta-field short">
+              <span>DATE :</span>
+              <input class="breakage-head-input" value="${escapeHtml(breakageState.currentDate)}" disabled />
+            </div>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="breakage-table">
+            <thead>
+              <tr class="summary-head-main">
+                <th class="breakage-col-no" rowspan="2">No.</th>
+                <th class="breakage-col-code" rowspan="2">Product Code</th>
+                <th class="breakage-col-description" rowspan="2">Description</th>
+                <th class="breakage-col-unit" rowspan="2">Unit</th>
+                <th class="breakage-col-qty" rowspan="2">Qty.</th>
+                <th class="breakage-col-cost" colspan="2">Recovery Cost (Baht)</th>
+                <th class="breakage-col-reason" rowspan="2">Reason</th>
+              </tr>
+              <tr class="summary-head-main">
+                <th class="breakage-col-cost-at">@</th>
+                <th class="breakage-col-total">Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${breakageState.reportData.lines.map((line, index) => `
+                <tr>
+                  <td>${index + 1}</td>
+                  <td><input class="breakage-input" data-line="${index}" data-field="productCode" value="${escapeHtml(line.productCode)}" ${breakageState.editMode ? "" : "disabled"} /></td>
+                  <td><input class="breakage-input left" data-line="${index}" data-field="description" value="${escapeHtml(line.description)}" ${breakageState.editMode ? "" : "disabled"} /></td>
+                  <td><input class="breakage-input" data-line="${index}" data-field="unit" value="${escapeHtml(line.unit)}" ${breakageState.editMode ? "" : "disabled"} /></td>
+                  <td><input class="breakage-input num" type="number" min="0" data-line="${index}" data-field="qty" value="${escapeHtml(line.qty)}" ${breakageState.editMode ? "" : "disabled"} /></td>
+                  <td><input class="breakage-input num" type="number" min="0" data-line="${index}" data-field="recoveryCost" value="${escapeHtml(line.recoveryCost)}" ${breakageState.editMode ? "" : "disabled"} /></td>
+                  <td class="breakage-total-cell" data-breakage-line-total="${index}">${formatNumber(breakageLineTotal(line))}</td>
+                  <td><input class="breakage-input left" data-line="${index}" data-field="reasons" value="${escapeHtml(line.reasons)}" ${breakageState.editMode ? "" : "disabled"} /></td>
+                </tr>
+              `).join("")}
+              <tr class="total-row">
+                <td colspan="6" style="text-align:right;padding-right:18px">Total</td>
+                <td class="breakage-total-cell" id="breakageTotalCost">${formatNumber(breakageTotals().cost)}</td>
+                <td></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="breakage-sign-grid">
+          <div class="breakage-sign-item">
+            <label>Prepared by :</label>
+            <input class="breakage-sign-input" id="breakagePreparedBy" value="${escapeHtml(breakageState.reportData.preparedBy || "")}" ${breakageState.editMode ? "" : "disabled"} />
+            <div class="breakage-role-label">Prepared by</div>
+          </div>
+          <div class="breakage-sign-item">
+            <label>Checked by :</label>
+            <input class="breakage-sign-input" id="breakageCheckedBy" value="${escapeHtml(breakageState.reportData.checkedBy || "")}" ${breakageState.editMode ? "" : "disabled"} />
+            <div class="breakage-role-label">Cost Controller</div>
+          </div>
+
+          <div class="breakage-sign-item">
+            <label>Reported by :</label>
+            <input class="breakage-sign-input" id="breakageReportedBy" value="${escapeHtml(breakageState.reportData.reportedBy || "")}" ${breakageState.editMode ? "" : "disabled"} />
+            <div class="breakage-role-label">Department Head</div>
+          </div>
+          <div class="breakage-sign-item">
+            <label>Verified by :</label>
+            <input class="breakage-sign-input" id="breakageVerifiedBy" value="${escapeHtml(breakageState.reportData.verifiedBy || "")}" ${breakageState.editMode ? "" : "disabled"} />
+            <div class="breakage-role-label">Cluster Financial Controller</div>
+          </div>
+
+          <div class="breakage-sign-item">
+            <label>Acknowlege by :</label>
+            <input class="breakage-sign-input" id="breakageAcknowledgeBy" value="${escapeHtml(breakageState.reportData.acknowledgeBy || "")}" ${breakageState.editMode ? "" : "disabled"} />
+            <div class="breakage-role-label">Hotel Manager</div>
+          </div>
+          <div class="breakage-sign-item">
+            <label>Approved by :</label>
+            <input class="breakage-sign-input" id="breakageApprovedBy" value="${escapeHtml(breakageState.reportData.approvedBy || "")}" ${breakageState.editMode ? "" : "disabled"} />
+            <div class="breakage-role-label">Cluster General Manager</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const dateInput = document.getElementById("breakageDateInput");
+  const outletDept = document.getElementById("breakageOutletDept");
+  const signMap = {
+    preparedBy: document.getElementById("breakagePreparedBy"),
+    reportedBy: document.getElementById("breakageReportedBy"),
+    checkedBy: document.getElementById("breakageCheckedBy"),
+    verifiedBy: document.getElementById("breakageVerifiedBy"),
+    acknowledgeBy: document.getElementById("breakageAcknowledgeBy"),
+    approvedBy: document.getElementById("breakageApprovedBy")
+  };
+
+  document.getElementById("backBtn")?.addEventListener("click", () => {
+    if (!canDiscardBreakageEdits()) return;
+    breakageState.editMode = false;
+    breakageState.dirty = false;
+    if (breakageState.savedSnapshot) breakageState.reportData = cloneDeep(breakageState.savedSnapshot);
+    showDashboard();
+  });
+
+  if (dateInput){
+    dateInput.addEventListener("change", (event) => {
+      if (!canDiscardBreakageEdits()) {
+        dateInput.value = breakageState.currentDate;
+        return;
+      }
+      breakageState.currentDate = event.target.value || todayValue();
+      breakageState.editMode = false;
+      breakageState.dirty = false;
+      loadBreakageReport(breakageState.currentDate);
+      renderBreakageSpoiledModule();
+    });
+  }
+
+  document.getElementById("breakageEditBtn").addEventListener("click", () => {
+    if (breakageState.editMode) return;
+    breakageState.savedSnapshot = cloneDeep(breakageState.reportData);
+    breakageState.editMode = true;
+    breakageState.dirty = false;
+    renderBreakageSpoiledModule();
+  });
+
+  document.getElementById("breakageSaveBtn").addEventListener("click", () => {
+    if (!breakageState.editMode) {
+      alert("กรุณากด EDIT ก่อน แล้วค่อยกด SAVE");
+      return;
+    }
+    saveBreakageReport();
+    breakageState.savedSnapshot = cloneDeep(breakageState.reportData);
+    breakageState.editMode = false;
+    breakageState.dirty = false;
+    renderBreakageSpoiledModule();
+  });
+
+  document.getElementById("breakageCancelBtn").addEventListener("click", () => {
+    if (!breakageState.editMode) {
+      alert("ยังไม่มีการแก้ไขให้ยกเลิก");
+      return;
+    }
+    breakageState.reportData = breakageState.savedSnapshot ? cloneDeep(breakageState.savedSnapshot) : createEmptyBreakageReport(breakageState.currentDate);
+    breakageState.editMode = false;
+    breakageState.dirty = false;
+    renderBreakageSpoiledModule();
+  });
+
+  document.getElementById("breakageExportBtn").addEventListener("click", () => {
+    downloadFile(`laya-breakage-spoiled-${breakageState.currentDate}.csv`, toCSV(breakageExportRows()));
+  });
+
+  document.getElementById("breakageClearBtn").addEventListener("click", () => {
+    if (!confirm(`ลบข้อมูลของรายงานวันที่ ${breakageState.currentDate} ?`)) return;
+    breakageState.reportData = createEmptyBreakageReport(breakageState.currentDate);
+    breakageState.savedSnapshot = cloneDeep(breakageState.reportData);
+    breakageState.editMode = false;
+    breakageState.dirty = false;
+    saveBreakageReport();
+    renderBreakageSpoiledModule();
+  });
+
+  if (outletDept){
+    outletDept.addEventListener("input", (event) => {
+      breakageState.reportData.outletDept = event.target.value;
+      breakageState.dirty = true;
+    });
+  }
+  Object.entries(signMap).forEach(([field, el]) => {
+    if (!el) return;
+    el.addEventListener("input", (event) => {
+      breakageState.reportData[field] = event.target.value;
+      breakageState.dirty = true;
+    });
+  });
+
+  document.querySelectorAll(".breakage-input").forEach(input => {
+    input.addEventListener("input", (event) => {
+      const lineIndex = Number(event.target.dataset.line);
+      const field = event.target.dataset.field;
+      let value = event.target.value;
+      if (["qty", "recoveryCost"].includes(field)) {
+        value = value === "" ? "" : Number(value);
+      }
+      breakageState.reportData.lines[lineIndex][field] = value;
+      breakageState.dirty = true;
+      refreshBreakageLiveTotals();
+    });
+  });
+
+  refreshBreakageLiveTotals();
+}
+
+
 function renderMealPlanModule(activeTab = "summary") {
   mealState.keepTab = activeTab;
   dashboardView.classList.remove("active");
@@ -1583,6 +1994,7 @@ function renderMealPlanModule(activeTab = "summary") {
 function showModule(moduleId){
   if (moduleId === "meal-plan-record") return renderMealPlanModule(mealState.keepTab || "summary");
   if (moduleId === "loss-damage") return renderLossDamageModule();
+  if (moduleId === "breakage-spoiled") return renderBreakageSpoiledModule();
   return showGenericModule(moduleId);
 }
 
@@ -1598,6 +2010,8 @@ function exportAllData(){
       };
     } else if (module.id === "loss-damage") {
       bundle[module.id] = exportAllLossReports();
+    } else if (module.id === "breakage-spoiled") {
+      bundle[module.id] = exportAllBreakageReports();
     } else {
       bundle[module.id] = getRecords(module.id);
     }
@@ -1634,6 +2048,7 @@ function boot(){
   initFirebaseIfPossible();
   loadLocalMonthData();
   loadLossReport(lossState.currentDate);
+  loadBreakageReport(breakageState.currentDate);
   loadMonthFromFirebaseIfConnected().finally(() => {
     mealState.editMode = false;
     mealState.dirty = false;
