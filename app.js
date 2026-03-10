@@ -1074,17 +1074,24 @@ function bindMealPlanEvents() {
     renderMealPlanModule(mealState.keepTab || "summary");
   });
 
-  document.getElementById("mealSaveBtn").addEventListener("click", async () => {
+  document.getElementById("mealSaveBtn").addEventListener("click", () => {
     if (!mealState.editMode) {
       alert("กรุณากด EDIT ก่อน แล้วค่อยกด SAVE");
       return;
     }
+
     saveLocalMonthData();
     mealState.savedSnapshot = JSON.parse(JSON.stringify(mealState.monthData));
     mealState.editMode = false;
     mealState.dirty = false;
-    if (firebaseState.connected) await syncMonthToFirebase(false);
+
     renderMealPlanModule(mealState.keepTab || "summary");
+
+    if (firebaseState.connected) {
+      syncMonthToFirebase(false).catch(error => {
+        console.error(error);
+      });
+    }
   });
 
   document.getElementById("mealCancelBtn").addEventListener("click", () => {
@@ -1112,6 +1119,12 @@ function bindMealPlanEvents() {
     mealState.dirty = false;
     saveLocalMonthData();
     renderMealPlanModule(mealState.keepTab || "summary");
+
+    if (firebaseState.connected) {
+      syncMonthToFirebase(false).catch(error => {
+        console.error(error);
+      });
+    }
   });
 
   renderMealPlanSummaryTable();
