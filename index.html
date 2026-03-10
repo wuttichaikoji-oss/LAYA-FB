@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Laya Operations Hub</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-badge">LAYA</div>
+        <div>
+          <h1>Laya Operations Hub</h1>
+          <p>Smart records for daily operations</p>
+        </div>
+      </div>
+
+      <nav class="nav-menu" id="navMenu"></nav>
+
+      <div class="sidebar-footer">
+        <div class="mini-card">
+          <div class="mini-title">Storage</div>
+          <div class="mini-value">Local Browser</div>
+        </div>
+        <div class="mini-card">
+          <div class="mini-title">Mode</div>
+          <div class="mini-value">GitHub Pages Ready</div>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <header class="hero">
+        <div class="hero-copy">
+          <div class="eyebrow">Laya Resort Phuket</div>
+          <h2>F&B & Operations Smart Dashboard</h2>
+          <p>
+            รวม 7 ระบบงานไว้ในเว็บเดียว กดเข้าแต่ละโมดูลเพื่อบันทึกข้อมูลจริงได้ทันที
+            พร้อมบันทึกข้อมูลลงเบราว์เซอร์, ดูรายการย้อนหลัง และ Export CSV
+          </p>
+        </div>
+        <div class="hero-actions">
+          <button class="hero-btn primary" data-target="dashboard">หน้าเมนูหลัก</button>
+          <button class="hero-btn" id="exportAllBtn">Export All Data</button>
+        </div>
+      </header>
+
+      <section id="dashboardView" class="view active"></section>
+      <section id="moduleView" class="view"></section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
