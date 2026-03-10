@@ -32,3 +32,6 @@
 - เมื่อกด `SAVE` ข้อมูลจะถูกบันทึกและช่องจะถูกล็อกอีกครั้ง
 - ช่องจำนวนแขกในแต่ละวันถูกขยายให้พิมพ์เลข 3 หลักได้สวยขึ้น
 - เปลี่ยนเดือนและปีได้อิสระ
+
+
+Updated: added CANCEL button for Meal Plan edit mode, narrowed Year/Month controls, and cleaned long descriptive text from the UI.

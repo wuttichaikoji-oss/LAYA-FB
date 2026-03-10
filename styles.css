@@ -342,3 +342,53 @@ button{cursor:pointer}
   color:var(--muted);
   font-size:.95rem;
 }
+
+
+.compact-field{
+  max-width: 124px;
+}
+.period-field{
+  max-width: 180px;
+}
+.meal-toolbar-grid{
+  display:grid;
+  grid-template-columns:124px 150px 180px;
+  gap:14px;
+  align-items:end;
+}
+.meal-toolbar-actions{
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px;
+  margin-top:16px;
+}
+.meal-toolbar-actions .btn{
+  min-width:132px;
+}
+.summary-table .day-head{
+  min-width:88px;
+}
+.cell-input{
+  width:94px;
+  min-width:94px;
+  padding:10px 10px;
+  font-size:1rem;
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 720px){
+  .meal-toolbar-grid{
+    grid-template-columns:1fr 1fr;
+  }
+  .compact-field,
+  .period-field{
+    max-width:none;
+  }
+  .meal-toolbar-actions{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+  }
+  .cell-input{
+    width:72px;
+    min-width:72px;
+  }
+}

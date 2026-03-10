@@ -236,6 +236,7 @@ let mealState = {
   year: new Date().getFullYear(),
   month: new Date().getMonth(),
   monthData: null,
+  savedSnapshot: null,
   editMode: false,
   dirty: false
 };
@@ -674,9 +675,12 @@ function loadLocalMonthData() {
     const raw = localStorage.getItem(mealStorageKey());
     if (!raw) {
       mealState.monthData = createEmptyMonthData();
+    mealState.savedSnapshot = JSON.parse(JSON.stringify(mealState.monthData));
+      mealState.savedSnapshot = JSON.parse(JSON.stringify(mealState.monthData));
       return;
     }
     mealState.monthData = mergeMonthData(createEmptyMonthData(), JSON.parse(raw));
+    mealState.savedSnapshot = JSON.parse(JSON.stringify(mealState.monthData));
   } catch (e) {
     console.error(e);
     mealState.monthData = createEmptyMonthData();
@@ -827,6 +831,7 @@ async function loadMonthFromFirebaseIfConnected() {
       grid: data.grid || {},
       updatedAt: data.updatedAtClient || new Date().toISOString()
     });
+    mealState.savedSnapshot = JSON.parse(JSON.stringify(mealState.monthData));
     saveLocalMonthData();
     return true;
   } catch (error) {
@@ -842,7 +847,6 @@ function mealPlanHeaderHtml() {
         <div><button class="back-btn" id="backBtn">← กลับหน้าเมนูหลัก</button></div>
         <div class="eyebrow" style="margin-top:16px">FOOD & BEVERAGE • PHASE 2</div>
         <h3>LAYA MEAL PLAN RECORD</h3>
-        <p>อิงจากรูปแบบไฟล์ต้นฉบับ พร้อมใช้งานจริง มีตารางรายวัน, Price Setup และระบบล็อกการแก้ไขด้วยปุ่ม EDIT / SAVE</p>
       </div>
       <div class="meal-stat-grid">
         <div class="stat-card sand"><div class="label">Total Cover</div><div class="value" id="statCover">0</div></div>
@@ -855,13 +859,14 @@ function mealPlanHeaderHtml() {
   return `
     <div class="toolbar-card">
       <div class="meal-toolbar-grid">
-        <div class="field"><label>Year</label><input type="number" id="mealYearInput" min="2024" max="2100" /></div>
-        <div class="field"><label>Month</label><select id="mealMonthInput"></select></div>
-        <div class="field"><label>Period Key</label><input type="text" id="mealPeriodKey" readonly /></div>
+        <div class="field compact-field"><label>Year</label><input type="number" id="mealYearInput" min="2024" max="2100" /></div>
+        <div class="field compact-field"><label>Month</label><select id="mealMonthInput"></select></div>
+        <div class="field period-field"><label>Period Key</label><input type="text" id="mealPeriodKey" readonly /></div>
       </div>
       <div class="meal-toolbar-actions">
         <button class="btn ${mealState.editMode ? "" : "primary"}" id="mealEditBtn" ${mealState.editMode ? "disabled" : ""}>EDIT</button>
         <button class="btn ${mealState.editMode ? "primary" : ""}" id="mealSaveBtn" ${mealState.editMode ? "" : "disabled"}>SAVE</button>
+        <button class="btn" id="mealCancelBtn" ${mealState.editMode ? "" : "disabled"}>CANCEL</button>
         <button class="btn" id="mealExportSummaryBtn">Export Summary CSV</button>
         <button class="btn danger" id="mealClearMonthBtn">Clear This Month</button>
       </div>
@@ -944,7 +949,7 @@ function renderMealPlanSummaryTable() {
           ${Array.from({ length: totalDays }, (_, i) => {
             const day = i + 1;
             const manual = manualCount(item.key, day);
-            return `<td><input class="cell-input" type="number" min="0" max="999" value="${manual || ""}" data-item-key="${escapeHtml(item.key)}" data-day="${day}" ${mealState.editMode ? "" : "disabled"} /></td>`;
+            return `<td><input class="cell-input" type="number" min="0" max="999" inputmode="numeric" value="${manual || ""}" data-item-key="${escapeHtml(item.key)}" data-day="${day}" ${mealState.editMode ? "" : "disabled"} /></td>`;
           }).join("")}
         </tr>`);
     });
@@ -1012,6 +1017,7 @@ function bindMealPlanEvents() {
     if (!canDiscardMealEdits()) return;
     mealState.editMode = false;
     mealState.dirty = false;
+    if (mealState.savedSnapshot) mealState.monthData = JSON.parse(JSON.stringify(mealState.savedSnapshot));
     showDashboard();
   });
 
@@ -1033,6 +1039,7 @@ function bindMealPlanEvents() {
     mealState.dirty = false;
     loadLocalMonthData();
     await loadMonthFromFirebaseIfConnected();
+    mealState.savedSnapshot = JSON.parse(JSON.stringify(mealState.monthData));
     renderMealPlanModule(mealState.keepTab || "summary");
   });
 
@@ -1046,6 +1053,7 @@ function bindMealPlanEvents() {
     mealState.dirty = false;
     loadLocalMonthData();
     await loadMonthFromFirebaseIfConnected();
+    mealState.savedSnapshot = JSON.parse(JSON.stringify(mealState.monthData));
     renderMealPlanModule(mealState.keepTab || "summary");
   });
 
@@ -1059,15 +1067,28 @@ function bindMealPlanEvents() {
   });
 
   document.getElementById("mealEditBtn").addEventListener("click", () => {
+    mealState.savedSnapshot = JSON.parse(JSON.stringify(mealState.monthData));
     mealState.editMode = true;
+    mealState.dirty = false;
     renderMealPlanModule(mealState.keepTab || "summary");
   });
 
   document.getElementById("mealSaveBtn").addEventListener("click", async () => {
     saveLocalMonthData();
+    mealState.savedSnapshot = JSON.parse(JSON.stringify(mealState.monthData));
     mealState.editMode = false;
     mealState.dirty = false;
     if (firebaseState.connected) await syncMonthToFirebase(false);
+    renderMealPlanModule(mealState.keepTab || "summary");
+  });
+
+  document.getElementById("mealCancelBtn").addEventListener("click", () => {
+    if (!mealState.editMode) return;
+    mealState.monthData = mealState.savedSnapshot
+      ? JSON.parse(JSON.stringify(mealState.savedSnapshot))
+      : createEmptyMonthData();
+    mealState.editMode = false;
+    mealState.dirty = false;
     renderMealPlanModule(mealState.keepTab || "summary");
   });
 
@@ -1078,6 +1099,7 @@ function bindMealPlanEvents() {
   document.getElementById("mealClearMonthBtn").addEventListener("click", () => {
     if (!confirm(`ลบข้อมูลทั้งหมดของ ${getPeriodKey()} ?`)) return;
     mealState.monthData = createEmptyMonthData();
+    mealState.savedSnapshot = JSON.parse(JSON.stringify(mealState.monthData));
     mealState.editMode = false;
     mealState.dirty = false;
     saveLocalMonthData();
@@ -1160,6 +1182,7 @@ function boot(){
   loadMonthFromFirebaseIfConnected().finally(() => {
     mealState.editMode = false;
     mealState.dirty = false;
+    mealState.savedSnapshot = JSON.parse(JSON.stringify(mealState.monthData));
     renderNav("dashboard");
     renderDashboard();
     const hash = (location.hash || "").replace("#", "");
