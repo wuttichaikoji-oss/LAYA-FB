@@ -1378,6 +1378,64 @@ function reportWindowBase(title, bodyHtml){
 </html>`);
   popup.document.close();
 }
+
+function flattenLineImages(report){
+  if (!report || !Array.isArray(report.lines)) return [];
+  return report.lines.flatMap(line => Array.isArray(line.images) ? line.images : []);
+}
+function renderLineEvidenceCell(images, prefix, lineIndex, editMode){
+  const list = Array.isArray(images) ? images : [];
+  return `
+    <div class="line-evidence-wrap">
+      ${editMode ? `
+        <label class="line-upload-btn">
+          <span>+ Photo</span>
+          <input type="file" data-${prefix}-line-upload="${lineIndex}" accept="image/*" multiple />
+        </label>
+      ` : ""}
+      ${list.length ? `
+        <div class="line-thumb-grid">
+          ${list.map(image => `
+            <div class="line-thumb-card">
+              <button type="button" class="line-thumb-btn" data-view-image="${escapeHtml(image.url)}" title="${escapeHtml(image.name || "image")}">
+                <img src="${escapeHtml(image.url)}" alt="${escapeHtml(image.name || "image")}" />
+              </button>
+              <div class="line-thumb-meta">${bytesToLabel(image.size)}</div>
+              ${editMode ? `<button type="button" class="mini-btn danger line-remove-btn" data-${prefix}-remove-image="${escapeHtml(image.id)}" data-line="${lineIndex}">×</button>` : ""}
+            </div>
+          `).join("")}
+        </div>
+      ` : `<div class="line-evidence-empty">No photo</div>`}
+    </div>
+  `;
+}
+function renderEvidenceByItemSection(lines, titleField){
+  const rows = (lines || []).filter(line => Array.isArray(line.images) && line.images.length);
+  if (!rows.length) {
+    return `<div class="note-box">No attached photos</div>`;
+  }
+  return `
+    <div class="evidence-item-stack">
+      ${rows.map((line, idx) => `
+        <div class="evidence-item-block">
+          <div class="evidence-item-title">Item ${line.item || idx + 1} • ${escapeHtml(line[titleField] || "-")}</div>
+          <div class="images">
+            ${(line.images || []).map(image => `
+              <div class="image-card">
+                <img src="${escapeHtml(image.url)}" alt="${escapeHtml(image.name || "image")}" />
+                <div class="image-meta">
+                  <div class="image-name">${escapeHtml(image.name || "image")}</div>
+                  <div class="image-sub">${bytesToLabel(image.size)} • ${Number(image.width || 0)}×${Number(image.height || 0)}</div>
+                </div>
+              </div>
+            `).join("")}
+          </div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
 function commonImageUploadError(error){
   console.error(error);
   alert("อัปโหลดรูปไม่สำเร็จ กรุณาตรวจสอบ Firebase Storage, Storage Rules และการเปิด Anonymous Auth หากโปรเจกต์ตั้งให้ต้องล็อกอิน");
@@ -1392,7 +1450,8 @@ function createEmptyLossLine(index){
     qty: "",
     recoveryCost: "",
     reasons: "",
-    recoverySelling: ""
+    recoverySelling: "",
+    images: []
   };
 }
 function createEmptyLossReport(date = lossState.currentDate){
@@ -1422,7 +1481,6 @@ function mergeLossReport(base, incoming){
         item: i + 1
       }));
     }
-    merged.images = Array.isArray(incoming.images) ? incoming.images : [];
   }
   return merged;
 }
@@ -1510,7 +1568,7 @@ function lossExportRows(){
       recoverySellingAt: line.recoverySelling,
       recoverySellingExVatTotal: totals.sellingExVat,
       recoverySellingIncVatTotal: totals.sellingIncVat,
-      imageCount: (lossState.reportData.images || []).length
+      imageCount: ((line.images || []).length)
     };
   });
 }
@@ -1592,19 +1650,8 @@ function exportLossReportDocument(){
     </section>
 
     <section class="block">
-      <h3>Attached Photos</h3>
-      ${(lossState.reportData.images || []).length ? `
-        <div class="images">
-          ${(lossState.reportData.images || []).map(image => `
-            <div class="image-card">
-              <img src="${escapeHtml(image.url)}" alt="${escapeHtml(image.name || "image")}" />
-              <div class="image-meta">
-                <div class="image-name">${escapeHtml(image.name || "image")}</div>
-                <div class="image-sub">${bytesToLabel(image.size)} • ${Number(image.width || 0)}×${Number(image.height || 0)}</div>
-              </div>
-            </div>
-          `).join("")}
-        </div>` : `<div class="note-box">No attached photos</div>`}
+      <h3>Evidence by Item</h3>
+      ${renderEvidenceByItemSection(lossState.reportData.lines, "description")}
     </section>
 
     <section class="block">
@@ -1719,6 +1766,7 @@ function renderLossDamageModule(){
                 <th class="loss-col-reason">Reasons</th>
                 <th class="loss-col-price">Recovery Selling @</th>
                 <th class="loss-col-total">Total</th>
+                <th class="loss-col-evidence">Evidence</th>
               </tr>
             </thead>
             <tbody>
@@ -1736,6 +1784,7 @@ function renderLossDamageModule(){
                     <td><input class="loss-input left" data-line="${index}" data-field="reasons" value="${escapeHtml(line.reasons || "")}" ${lossState.editMode ? "" : "disabled"} /></td>
                     <td><input class="loss-input num" type="number" min="0" step="0.01" data-line="${index}" data-field="recoverySelling" value="${escapeHtml(line.recoverySelling || "")}" ${lossState.editMode ? "" : "disabled"} /></td>
                     <td class="loss-total-cell" id="lossSaleTotal_${index}">${formatNumber(totals.sellingExVat)}</td>
+                    <td class="loss-evidence-cell">${renderLineEvidenceCell(line.images, "loss", index, lossState.editMode)}</td>
                   </tr>
                 `;
               }).join("")}
@@ -1744,9 +1793,10 @@ function renderLossDamageModule(){
                 <td id="lossGrandCost">${formatNumber(lossTotals().cost)}</td>
                 <td colspan="2" class="item-label">Total Recovery Selling (Excl. VAT)</td>
                 <td id="lossGrandSale">${formatNumber(lossTotals().sellingExVat)}</td>
+                <td></td>
               </tr>
               <tr class="total-row">
-                <td colspan="9" class="item-label">Total Inclusive VAT</td>
+                <td colspan="10" class="item-label">Total Inclusive VAT</td>
                 <td id="lossGrandVat">${formatNumber(lossTotals().sellingIncVat)}</td>
               </tr>
             </tbody>
@@ -1755,16 +1805,9 @@ function renderLossDamageModule(){
 
         <div class="loss-bottom-grid">
           <div class="panel loss-evidence-panel">
-            <h4>Picture / Evidence</h4>
-            <div class="upload-toolbar">
-              <label class="upload-label ${lossState.editMode ? "" : "disabled"}">
-                <span>Upload Photos</span>
-                <input type="file" id="lossPhotoInput" accept="image/*" multiple ${lossState.editMode ? "" : "disabled"} />
-              </label>
-              <div class="upload-hint">อัปได้หลายรูป • ระบบจะย่อขนาดก่อนอัปขึ้น Firebase Storage ทุกครั้ง</div>
-            </div>
-            ${renderReportImageGallery(lossState.reportData.images, "loss", lossState.editMode)}
-            <textarea id="lossPictureNote" class="loss-note-area" ${lossState.editMode ? "" : "disabled"} placeholder="บันทึกข้อมูลภาพประกอบหรือหลักฐานเพิ่มเติม">${escapeHtml(lossState.reportData.pictureNote || "")}</textarea>
+            <h4>Picture / Evidence Note</h4>
+            <div class="upload-hint">อัปโหลดรูปได้จากคอลัมน์ Evidence ของแต่ละแถว เพื่อผูกหลักฐานให้ตรงกับรายการนั้นโดยตรง</div>
+            <textarea id="lossPictureNote" class="loss-note-area" ${lossState.editMode ? "" : "disabled"} placeholder="บันทึกข้อมูลหลักฐานหรือหมายเหตุเพิ่มเติมของรายงาน">${escapeHtml(lossState.reportData.pictureNote || "")}</textarea>
           </div>
           <div class="panel loss-sign-panel">
             <h4>Approval / Signature</h4>
@@ -1808,7 +1851,6 @@ function bindLossDamageEvents(){
   const dateInput = document.getElementById("lossDateInput");
   const outletDept = document.getElementById("lossOutletDept");
   const pictureNote = document.getElementById("lossPictureNote");
-  const photoInput = document.getElementById("lossPhotoInput");
   const signMap = {
     preparedBy: document.getElementById("lossPreparedBy"),
     reportedBy: document.getElementById("lossReportedBy"),
@@ -1854,8 +1896,8 @@ function bindLossDamageEvents(){
       alert("ยังไม่มีการแก้ไขให้ยกเลิก");
       return;
     }
-    const currentImages = cloneDeep(lossState.reportData.images || []);
-    const snapshotImages = cloneDeep((lossState.savedSnapshot && lossState.savedSnapshot.images) || []);
+    const currentImages = flattenLineImages(lossState.reportData);
+    const snapshotImages = flattenLineImages(lossState.savedSnapshot || {});
     lossState.reportData = lossState.savedSnapshot ? cloneDeep(lossState.savedSnapshot) : createEmptyLossReport(lossState.currentDate);
     lossState.editMode = false;
     lossState.dirty = false;
@@ -1873,7 +1915,7 @@ function bindLossDamageEvents(){
 
   document.getElementById("lossClearBtn").addEventListener("click", () => {
     if (!confirm(`ลบข้อมูลของรายงานวันที่ ${lossState.currentDate} ?`)) return;
-    const oldImages = cloneDeep(lossState.reportData.images || []);
+    const oldImages = flattenLineImages(lossState.reportData);
     lossState.reportData = createEmptyLossReport(lossState.currentDate);
     lossState.savedSnapshot = cloneDeep(lossState.reportData);
     lossState.editMode = false;
@@ -1917,8 +1959,9 @@ function bindLossDamageEvents(){
     });
   });
 
-  if (photoInput) {
-    photoInput.addEventListener("change", async (event) => {
+  document.querySelectorAll("[data-loss-line-upload]").forEach(input => {
+    input.addEventListener("change", async (event) => {
+      const lineIndex = Number(event.target.dataset.lossLineUpload);
       const files = Array.from(event.target.files || []);
       event.target.value = "";
       if (!files.length) return;
@@ -1927,15 +1970,15 @@ function bindLossDamageEvents(){
         return;
       }
       try {
-        const uploaded = await uploadCompressedImagesToStorage("loss-damage", lossState.currentDate, files);
-        lossState.reportData.images = [...(lossState.reportData.images || []), ...uploaded];
+        const uploaded = await uploadCompressedImagesToStorage(`loss-damage/item-${lineIndex + 1}`, lossState.currentDate, files);
+        lossState.reportData.lines[lineIndex].images = [...(lossState.reportData.lines[lineIndex].images || []), ...uploaded];
         lossState.dirty = true;
         renderLossDamageModule();
       } catch (error) {
         commonImageUploadError(error);
       }
     });
-  }
+  });
 
   document.querySelectorAll("[data-view-image]").forEach(btn => {
     btn.addEventListener("click", () => openImageUrl(btn.dataset.viewImage));
@@ -1948,8 +1991,9 @@ function bindLossDamageEvents(){
         return;
       }
       const imageId = btn.dataset.lossRemoveImage;
-      const target = (lossState.reportData.images || []).find(image => image.id === imageId);
-      lossState.reportData.images = (lossState.reportData.images || []).filter(image => image.id !== imageId);
+      const lineIndex = Number(btn.dataset.line);
+      const target = (lossState.reportData.lines[lineIndex].images || []).find(image => image.id === imageId);
+      lossState.reportData.lines[lineIndex].images = (lossState.reportData.lines[lineIndex].images || []).filter(image => image.id !== imageId);
       lossState.dirty = true;
       renderLossDamageModule();
       if (target && target.storagePath) {
@@ -1982,7 +2026,8 @@ function createEmptyBreakageLine(index){
     unit: "",
     qty: "",
     recoveryCost: "",
-    reasons: ""
+    reasons: "",
+    images: []
   };
 }
 function createEmptyBreakageReport(date = breakageState.currentDate){
@@ -2012,7 +2057,6 @@ function mergeBreakageReport(base, incoming){
         item: i + 1
       }));
     }
-    merged.images = Array.isArray(incoming.images) ? incoming.images : [];
   }
   return merged;
 }
@@ -2085,7 +2129,7 @@ function breakageExportRows(){
     recoveryCostAt: line.recoveryCost,
     total: breakageLineTotal(line),
     reasons: line.reasons,
-    imageCount: (breakageState.reportData.images || []).length
+    imageCount: ((line.images || []).length)
   }));
 }
 
@@ -2154,19 +2198,8 @@ function exportBreakageReportDocument(){
     </section>
 
     <section class="block">
-      <h3>Attached Photos</h3>
-      ${(breakageState.reportData.images || []).length ? `
-        <div class="images">
-          ${(breakageState.reportData.images || []).map(image => `
-            <div class="image-card">
-              <img src="${escapeHtml(image.url)}" alt="${escapeHtml(image.name || "image")}" />
-              <div class="image-meta">
-                <div class="image-name">${escapeHtml(image.name || "image")}</div>
-                <div class="image-sub">${bytesToLabel(image.size)} • ${Number(image.width || 0)}×${Number(image.height || 0)}</div>
-              </div>
-            </div>
-          `).join("")}
-        </div>` : `<div class="note-box">No attached photos</div>`}
+      <h3>Evidence by Item</h3>
+      ${renderEvidenceByItemSection(breakageState.reportData.lines, "description")}
     </section>
 
     <section class="block">
@@ -2292,6 +2325,7 @@ function renderBreakageSpoiledModule(){
                 <th class="breakage-col-qty" rowspan="2">Qty.</th>
                 <th class="breakage-col-cost" colspan="2">Recovery Cost (Baht)</th>
                 <th class="breakage-col-reason" rowspan="2">Reason</th>
+                <th class="breakage-col-evidence" rowspan="2">Evidence</th>
               </tr>
               <tr class="summary-head-main">
                 <th class="breakage-col-cost-at">@</th>
@@ -2309,11 +2343,13 @@ function renderBreakageSpoiledModule(){
                   <td><input class="breakage-input num" type="number" min="0" data-line="${index}" data-field="recoveryCost" value="${escapeHtml(line.recoveryCost)}" ${breakageState.editMode ? "" : "disabled"} /></td>
                   <td class="breakage-total-cell" data-breakage-line-total="${index}">${formatNumber(breakageLineTotal(line))}</td>
                   <td><input class="breakage-input left" data-line="${index}" data-field="reasons" value="${escapeHtml(line.reasons)}" ${breakageState.editMode ? "" : "disabled"} /></td>
+                  <td class="breakage-evidence-cell">${renderLineEvidenceCell(line.images, "breakage", index, breakageState.editMode)}</td>
                 </tr>
               `).join("")}
               <tr class="total-row">
                 <td colspan="6" style="text-align:right;padding-right:18px">Total</td>
                 <td class="breakage-total-cell" id="breakageTotalCost">${formatNumber(breakageTotals().cost)}</td>
+                <td></td>
                 <td></td>
               </tr>
             </tbody>
@@ -2322,16 +2358,9 @@ function renderBreakageSpoiledModule(){
 
         <div class="breakage-bottom-grid">
           <div class="panel loss-evidence-panel">
-            <h4>Picture / Evidence</h4>
-            <div class="upload-toolbar">
-              <label class="upload-label ${breakageState.editMode ? "" : "disabled"}">
-                <span>Upload Photos</span>
-                <input type="file" id="breakagePhotoInput" accept="image/*" multiple ${breakageState.editMode ? "" : "disabled"} />
-              </label>
-              <div class="upload-hint">อัปได้หลายรูป • ระบบจะย่อขนาดก่อนอัปขึ้น Firebase Storage ทุกครั้ง</div>
-            </div>
-            ${renderReportImageGallery(breakageState.reportData.images, "breakage", breakageState.editMode)}
-            <textarea id="breakagePictureNote" class="loss-note-area" ${breakageState.editMode ? "" : "disabled"} placeholder="บันทึกข้อมูลภาพประกอบหรือหลักฐานเพิ่มเติม">${escapeHtml(breakageState.reportData.pictureNote || "")}</textarea>
+            <h4>Picture / Evidence Note</h4>
+            <div class="upload-hint">อัปโหลดรูปได้จากคอลัมน์ Evidence ของแต่ละแถว เพื่อผูกหลักฐานให้ตรงกับรายการนั้นโดยตรง</div>
+            <textarea id="breakagePictureNote" class="loss-note-area" ${breakageState.editMode ? "" : "disabled"} placeholder="บันทึกข้อมูลหลักฐานหรือหมายเหตุเพิ่มเติมของรายงาน">${escapeHtml(breakageState.reportData.pictureNote || "")}</textarea>
           </div>
 
           <div class="breakage-sign-grid">
@@ -2376,7 +2405,6 @@ function renderBreakageSpoiledModule(){
   const dateInput = document.getElementById("breakageDateInput");
   const outletDept = document.getElementById("breakageOutletDept");
   const pictureNote = document.getElementById("breakagePictureNote");
-  const photoInput = document.getElementById("breakagePhotoInput");
   const signMap = {
     preparedBy: document.getElementById("breakagePreparedBy"),
     reportedBy: document.getElementById("breakageReportedBy"),
@@ -2433,8 +2461,8 @@ function renderBreakageSpoiledModule(){
       alert("ยังไม่มีการแก้ไขให้ยกเลิก");
       return;
     }
-    const currentImages = cloneDeep(breakageState.reportData.images || []);
-    const snapshotImages = cloneDeep((breakageState.savedSnapshot && breakageState.savedSnapshot.images) || []);
+    const currentImages = flattenLineImages(breakageState.reportData);
+    const snapshotImages = flattenLineImages(breakageState.savedSnapshot || {});
     breakageState.reportData = breakageState.savedSnapshot ? cloneDeep(breakageState.savedSnapshot) : createEmptyBreakageReport(breakageState.currentDate);
     breakageState.editMode = false;
     breakageState.dirty = false;
@@ -2452,7 +2480,7 @@ function renderBreakageSpoiledModule(){
 
   document.getElementById("breakageClearBtn").addEventListener("click", () => {
     if (!confirm(`ลบข้อมูลของรายงานวันที่ ${breakageState.currentDate} ?`)) return;
-    const oldImages = cloneDeep(breakageState.reportData.images || []);
+    const oldImages = flattenLineImages(breakageState.reportData);
     breakageState.reportData = createEmptyBreakageReport(breakageState.currentDate);
     breakageState.savedSnapshot = cloneDeep(breakageState.reportData);
     breakageState.editMode = false;
@@ -2496,8 +2524,9 @@ function renderBreakageSpoiledModule(){
     });
   });
 
-  if (photoInput) {
-    photoInput.addEventListener("change", async (event) => {
+  document.querySelectorAll("[data-breakage-line-upload]").forEach(input => {
+    input.addEventListener("change", async (event) => {
+      const lineIndex = Number(event.target.dataset.breakageLineUpload);
       const files = Array.from(event.target.files || []);
       event.target.value = "";
       if (!files.length) return;
@@ -2506,15 +2535,15 @@ function renderBreakageSpoiledModule(){
         return;
       }
       try {
-        const uploaded = await uploadCompressedImagesToStorage("breakage-spoiled", breakageState.currentDate, files);
-        breakageState.reportData.images = [...(breakageState.reportData.images || []), ...uploaded];
+        const uploaded = await uploadCompressedImagesToStorage(`breakage-spoiled/item-${lineIndex + 1}`, breakageState.currentDate, files);
+        breakageState.reportData.lines[lineIndex].images = [...(breakageState.reportData.lines[lineIndex].images || []), ...uploaded];
         breakageState.dirty = true;
         renderBreakageSpoiledModule();
       } catch (error) {
         commonImageUploadError(error);
       }
     });
-  }
+  });
 
   document.querySelectorAll("[data-view-image]").forEach(btn => {
     btn.addEventListener("click", () => openImageUrl(btn.dataset.viewImage));
@@ -2527,8 +2556,9 @@ function renderBreakageSpoiledModule(){
         return;
       }
       const imageId = btn.dataset.breakageRemoveImage;
-      const target = (breakageState.reportData.images || []).find(image => image.id === imageId);
-      breakageState.reportData.images = (breakageState.reportData.images || []).filter(image => image.id !== imageId);
+      const lineIndex = Number(btn.dataset.line);
+      const target = (breakageState.reportData.lines[lineIndex].images || []).find(image => image.id === imageId);
+      breakageState.reportData.lines[lineIndex].images = (breakageState.reportData.lines[lineIndex].images || []).filter(image => image.id !== imageId);
       breakageState.dirty = true;
       renderBreakageSpoiledModule();
       if (target && target.storagePath) {
