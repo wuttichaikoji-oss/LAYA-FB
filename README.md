@@ -37,3 +37,5 @@
 Updated: added CANCEL button for Meal Plan edit mode, narrowed Year/Month controls, and cleaned long descriptive text from the UI.
 
 Fixed: SAVE now switches Meal Plan back to locked mode immediately after click, then syncs in the background.
+
+Added a special LAYA LOSS DAMAGE page based on the attached Loss / Damage Report template with EDIT / SAVE / CANCEL and per-date saved reports.

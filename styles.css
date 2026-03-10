@@ -403,3 +403,151 @@ button{cursor:pointer}
 .btn.btn-soft:hover{
   background:#ece3d6;
 }
+
+
+/* Loss Damage special module */
+.loss-header .meal-title p{max-width:760px}
+.loss-toolbar-grid{
+  display:grid;
+  grid-template-columns:160px 140px 180px;
+  gap:14px;
+  align-items:end;
+  margin-bottom:16px;
+}
+.loss-report-card{
+  display:flex;
+  flex-direction:column;
+  gap:18px;
+}
+.loss-report-head{
+  display:flex;
+  flex-direction:column;
+  gap:14px;
+}
+.loss-title-stack{
+  text-align:center;
+  padding-top:8px;
+}
+.loss-resort{
+  font-size:1rem;
+  font-weight:700;
+  letter-spacing:.02em;
+}
+.loss-main-title{
+  margin-top:6px;
+  font-size:2rem;
+  font-weight:900;
+}
+.loss-meta-row{
+  display:grid;
+  grid-template-columns:1fr 240px;
+  gap:14px;
+  align-items:end;
+}
+.loss-meta-field{
+  display:flex;
+  align-items:center;
+  gap:12px;
+}
+.loss-meta-field span{
+  font-weight:800;
+  color:#6a5d4c;
+  white-space:nowrap;
+}
+.loss-meta-field.short{
+  justify-content:flex-end;
+}
+.loss-head-input{
+  width:100%;
+  border:none;
+  border-bottom:2px dotted #bda88d;
+  background:transparent;
+  padding:8px 4px;
+  border-radius:0;
+}
+.loss-head-input:disabled{
+  color:var(--text);
+  opacity:1;
+}
+.loss-table{
+  width:100%;
+  min-width:1550px;
+  border-collapse:collapse;
+}
+.loss-table th,.loss-table td{
+  border-bottom:1px solid #eee4d7;
+  border-right:1px solid #eee4d7;
+  padding:8px;
+  text-align:center;
+  vertical-align:middle;
+}
+.loss-table th{
+  position:sticky;
+  top:0;
+  z-index:2;
+}
+.loss-col-item{min-width:58px}
+.loss-col-article{min-width:130px}
+.loss-col-description{min-width:260px}
+.loss-col-unit{min-width:80px}
+.loss-col-qty{min-width:80px}
+.loss-col-price,.loss-col-total{min-width:120px}
+.loss-col-reason{min-width:240px}
+.loss-input{
+  width:100%;
+  border:1px solid #decfb9;
+  border-radius:12px;
+  padding:10px 10px;
+  background:#fffdf9;
+}
+.loss-input.left{text-align:left}
+.loss-input.num{
+  min-width:92px;
+  text-align:center;
+  font-variant-numeric:tabular-nums;
+}
+.loss-input:disabled{
+  background:#f7f3ec;
+  color:var(--text);
+  opacity:1;
+  border-color:#e8dfd0;
+}
+.loss-total-cell{
+  font-weight:800;
+  color:#0d4c3a;
+  background:#faf6ef;
+}
+.loss-bottom-grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:18px;
+}
+.loss-note-area{
+  width:100%;
+  min-height:170px;
+  border:1px solid #decfb9;
+  border-radius:18px;
+  padding:14px;
+  resize:vertical;
+  background:#fffdf9;
+}
+.loss-note-area:disabled{
+  background:#f7f3ec;
+  color:var(--text);
+  opacity:1;
+}
+.loss-sign-grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:14px;
+}
+@media (max-width: 900px){
+  .loss-toolbar-grid{
+    grid-template-columns:1fr 1fr;
+  }
+  .loss-meta-row,
+  .loss-bottom-grid,
+  .loss-sign-grid{
+    grid-template-columns:1fr;
+  }
+}

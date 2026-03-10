@@ -16,6 +16,8 @@ const MONTHS = [
   "January","February","March","April","May","June",
   "July","August","September","October","November","December"
 ];
+const LOSS_REPORT_PREFIX = "layaLossDamage::report::";
+const LOSS_TEMPLATE_ROWS = 28;
 
 const modules = [
   {
@@ -301,6 +303,7 @@ function moduleCount(){
   let total = 0;
   modules.forEach(m => {
     if (m.id === "meal-plan-record") total += monthCountForCard();
+    else if (m.id === "loss-damage") total += lossReportCount();
     else total += getRecords(m.id).length;
   });
   return total;
@@ -342,7 +345,11 @@ function renderNav(activeId = "dashboard"){
 function renderDashboard(){
   const summaries = modules.map(module => ({
     ...module,
-    count: module.id === "meal-plan-record" ? monthCountForCard() : getRecords(module.id).length
+    count: module.id === "meal-plan-record"
+      ? monthCountForCard()
+      : module.id === "loss-damage"
+        ? lossReportCount()
+        : getRecords(module.id).length
   }));
 
   dashboardView.innerHTML = `
@@ -1131,6 +1138,429 @@ function bindMealPlanEvents() {
   renderMealPriceTable();
 }
 
+
+/* Loss Damage special module */
+let lossState = {
+  currentDate: todayValue(),
+  reportData: null,
+  savedSnapshot: null,
+  editMode: false,
+  dirty: false
+};
+
+function lossStorageKey(date = lossState.currentDate){
+  return `${LOSS_REPORT_PREFIX}${date}`;
+}
+function cloneDeep(obj){
+  return JSON.parse(JSON.stringify(obj));
+}
+function createEmptyLossLine(index){
+  return {
+    item: index + 1,
+    articleNumber: "",
+    description: "",
+    unit: "",
+    qty: "",
+    recoveryCost: "",
+    reasons: "",
+    recoverySelling: ""
+  };
+}
+function createEmptyLossReport(date = lossState.currentDate){
+  return {
+    outletDept: "",
+    reportDate: date,
+    lines: Array.from({ length: LOSS_TEMPLATE_ROWS }, (_, i) => createEmptyLossLine(i)),
+    pictureNote: "",
+    preparedBy: "",
+    reportedBy: "",
+    checkedBy: "",
+    verifiedBy: "",
+    acknowledgeBy: "",
+    approvedBy: "",
+    updatedAt: new Date().toISOString()
+  };
+}
+function mergeLossReport(base, incoming){
+  const merged = cloneDeep(base);
+  if (incoming && typeof incoming === "object"){
+    Object.assign(merged, incoming);
+    if (Array.isArray(incoming.lines)){
+      merged.lines = Array.from({ length: LOSS_TEMPLATE_ROWS }, (_, i) => ({
+        ...createEmptyLossLine(i),
+        ...(incoming.lines[i] || {}),
+        item: i + 1
+      }));
+    }
+  }
+  return merged;
+}
+function loadLossReport(date = lossState.currentDate){
+  lossState.currentDate = date;
+  try {
+    const raw = localStorage.getItem(lossStorageKey(date));
+    if (!raw) {
+      lossState.reportData = createEmptyLossReport(date);
+      lossState.savedSnapshot = cloneDeep(lossState.reportData);
+      return;
+    }
+    const parsed = JSON.parse(raw);
+    lossState.reportData = mergeLossReport(createEmptyLossReport(date), parsed);
+    lossState.savedSnapshot = cloneDeep(lossState.reportData);
+  } catch (error) {
+    console.error(error);
+    lossState.reportData = createEmptyLossReport(date);
+    lossState.savedSnapshot = cloneDeep(lossState.reportData);
+  }
+}
+function saveLossReport(){
+  lossState.reportData.updatedAt = new Date().toISOString();
+  localStorage.setItem(lossStorageKey(lossState.currentDate), JSON.stringify(lossState.reportData));
+}
+function lossReportCount(){
+  let count = 0;
+  for (let i = 0; i < localStorage.length; i += 1){
+    const key = localStorage.key(i);
+    if (key && key.startsWith(LOSS_REPORT_PREFIX)) count += 1;
+  }
+  return count;
+}
+function exportAllLossReports(){
+  const bundle = {};
+  for (let i = 0; i < localStorage.length; i += 1){
+    const key = localStorage.key(i);
+    if (!key || !key.startsWith(LOSS_REPORT_PREFIX)) continue;
+    try {
+      bundle[key.replace(LOSS_REPORT_PREFIX, "")] = JSON.parse(localStorage.getItem(key));
+    } catch (error) {
+      console.error(error);
+    }
+  }
+  return bundle;
+}
+function canDiscardLossEdits(){
+  if (!lossState.editMode || !lossState.dirty) return true;
+  return confirm("มีการแก้ไขที่ยังไม่ได้บันทึก ต้องการออกหรือเปลี่ยนวันที่ต่อหรือไม่?");
+}
+function lossLineTotals(line){
+  const qty = Number(line.qty || 0);
+  const recoveryCost = Number(line.recoveryCost || 0);
+  const recoverySelling = Number(line.recoverySelling || 0);
+  return {
+    costTotal: qty * recoveryCost,
+    sellingExVat: (qty * recoverySelling) / 1.07,
+    sellingIncVat: qty * recoverySelling
+  };
+}
+function lossTotals(){
+  return lossState.reportData.lines.reduce((acc, line) => {
+    const row = lossLineTotals(line);
+    acc.cost += row.costTotal;
+    acc.sellingExVat += row.sellingExVat;
+    acc.sellingIncVat += row.sellingIncVat;
+    acc.qty += Number(line.qty || 0);
+    return acc;
+  }, { cost: 0, sellingExVat: 0, sellingIncVat: 0, qty: 0 });
+}
+function lossExportRows(){
+  return lossState.reportData.lines.map((line, index) => {
+    const totals = lossLineTotals(line);
+    return {
+      reportDate: lossState.currentDate,
+      outletDept: lossState.reportData.outletDept,
+      item: index + 1,
+      articleNumber: line.articleNumber,
+      description: line.description,
+      unit: line.unit,
+      qty: line.qty,
+      recoveryCostAt: line.recoveryCost,
+      recoveryCostTotal: totals.costTotal,
+      reasons: line.reasons,
+      recoverySellingAt: line.recoverySelling,
+      recoverySellingExVatTotal: totals.sellingExVat,
+      recoverySellingIncVatTotal: totals.sellingIncVat
+    };
+  });
+}
+function lossHeaderHtml(){
+  const totals = lossTotals();
+  return `
+    <div class="meal-header loss-header">
+      <div class="meal-title">
+        <div class="eyebrow">Laya Resort Phuket</div>
+        <h3>LAYA LOSS DAMAGE</h3>
+        <p>ออกแบบตามเอกสาร Loss / Damage Report พร้อมโหมด EDIT / SAVE / CANCEL สำหรับใช้งานจริง</p>
+      </div>
+      <div class="meal-stat-grid">
+        <div class="stat-card sand">
+          <div class="label">Reports Saved</div>
+          <div class="value">${formatNumber(lossReportCount())}</div>
+        </div>
+        <div class="stat-card mint">
+          <div class="label">Recovery Cost</div>
+          <div class="value" id="lossStatCost">${formatNumber(totals.cost)}</div>
+        </div>
+        <div class="stat-card sky">
+          <div class="label">Selling Incl. VAT</div>
+          <div class="value" id="lossStatSale">${formatNumber(totals.sellingIncVat)}</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+function lossToolbarHtml(){
+  return `
+    <div class="panel">
+      <div class="loss-toolbar-grid">
+        <div class="field compact-field">
+          <label>Report Date</label>
+          <input type="date" id="lossDateInput" value="${lossState.currentDate}" ${lossState.editMode ? "disabled" : ""}/>
+        </div>
+        <div class="field compact-field">
+          <label>Status</label>
+          <input type="text" value="${lossState.editMode ? "Editing" : "Locked"}" readonly />
+        </div>
+        <div class="field period-field">
+          <label>Report Key</label>
+          <input type="text" value="${lossState.currentDate}" readonly />
+        </div>
+      </div>
+      <div class="meal-toolbar-actions">
+        <button class="btn ${lossState.editMode ? "btn-soft" : "primary"}" id="lossEditBtn">EDIT</button>
+        <button class="btn ${lossState.editMode ? "primary" : "btn-soft"}" id="lossSaveBtn">SAVE</button>
+        <button class="btn ${lossState.editMode ? "" : "btn-soft"}" id="lossCancelBtn">CANCEL</button>
+        <button class="btn" id="lossExportBtn">Export CSV</button>
+        <button class="btn danger" id="lossClearBtn">Clear Report</button>
+      </div>
+    </div>
+  `;
+}
+function renderLossDamageModule(){
+  if (!lossState.reportData) loadLossReport(lossState.currentDate);
+  dashboardView.classList.remove("active");
+  moduleView.classList.add("active");
+  renderNav("loss-damage");
+  history.replaceState({}, "", "#loss-damage");
+
+  moduleView.innerHTML = `
+    <div class="meal-shell">
+      ${lossHeaderHtml()}
+      ${lossToolbarHtml()}
+      <div class="panel loss-report-card">
+        <div class="loss-report-head">
+          <div class="loss-title-stack">
+            <div class="loss-resort">Laya Resort Phuket</div>
+            <div class="loss-main-title">Loss / Damage</div>
+          </div>
+          <div class="loss-meta-row">
+            <div class="loss-meta-field">
+              <span>OUTLET / DEPT.</span>
+              <input class="loss-head-input" id="lossOutletDept" value="${escapeHtml(lossState.reportData.outletDept || "")}" ${lossState.editMode ? "" : "disabled"} />
+            </div>
+            <div class="loss-meta-field short">
+              <span>DATE :</span>
+              <input class="loss-head-input" value="${escapeHtml(lossState.currentDate)}" disabled />
+            </div>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="loss-table">
+            <thead>
+              <tr class="summary-head-main">
+                <th class="loss-col-item">Item</th>
+                <th class="loss-col-article">Article Number</th>
+                <th class="loss-col-description">Description</th>
+                <th class="loss-col-unit">Unit</th>
+                <th class="loss-col-qty">Qty.</th>
+                <th class="loss-col-price">Recovery Cost @</th>
+                <th class="loss-col-total">Total</th>
+                <th class="loss-col-reason">Reasons</th>
+                <th class="loss-col-price">Recovery Selling @</th>
+                <th class="loss-col-total">Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${lossState.reportData.lines.map((line, index) => {
+                const totals = lossLineTotals(line);
+                return `
+                  <tr>
+                    <td>${index + 1}</td>
+                    <td><input class="loss-input" data-line="${index}" data-field="articleNumber" value="${escapeHtml(line.articleNumber || "")}" ${lossState.editMode ? "" : "disabled"} /></td>
+                    <td><input class="loss-input left" data-line="${index}" data-field="description" value="${escapeHtml(line.description || "")}" ${lossState.editMode ? "" : "disabled"} /></td>
+                    <td><input class="loss-input" data-line="${index}" data-field="unit" value="${escapeHtml(line.unit || "")}" ${lossState.editMode ? "" : "disabled"} /></td>
+                    <td><input class="loss-input num" type="number" min="0" max="999" inputmode="numeric" data-line="${index}" data-field="qty" value="${escapeHtml(line.qty || "")}" ${lossState.editMode ? "" : "disabled"} /></td>
+                    <td><input class="loss-input num" type="number" min="0" step="0.01" data-line="${index}" data-field="recoveryCost" value="${escapeHtml(line.recoveryCost || "")}" ${lossState.editMode ? "" : "disabled"} /></td>
+                    <td class="loss-total-cell" id="lossCostTotal_${index}">${formatNumber(totals.costTotal)}</td>
+                    <td><input class="loss-input left" data-line="${index}" data-field="reasons" value="${escapeHtml(line.reasons || "")}" ${lossState.editMode ? "" : "disabled"} /></td>
+                    <td><input class="loss-input num" type="number" min="0" step="0.01" data-line="${index}" data-field="recoverySelling" value="${escapeHtml(line.recoverySelling || "")}" ${lossState.editMode ? "" : "disabled"} /></td>
+                    <td class="loss-total-cell" id="lossSaleTotal_${index}">${formatNumber(totals.sellingExVat)}</td>
+                  </tr>
+                `;
+              }).join("")}
+              <tr class="total-row">
+                <td colspan="6" class="item-label">Total Recovery Cost</td>
+                <td id="lossGrandCost">${formatNumber(lossTotals().cost)}</td>
+                <td colspan="2" class="item-label">Total Recovery Selling (Excl. VAT)</td>
+                <td id="lossGrandSale">${formatNumber(lossTotals().sellingExVat)}</td>
+              </tr>
+              <tr class="total-row">
+                <td colspan="9" class="item-label">Total Inclusive VAT</td>
+                <td id="lossGrandVat">${formatNumber(lossTotals().sellingIncVat)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="loss-bottom-grid">
+          <div class="panel loss-evidence-panel">
+            <h4>Picture / Evidence Note</h4>
+            <textarea id="lossPictureNote" class="loss-note-area" ${lossState.editMode ? "" : "disabled"} placeholder="บันทึกข้อมูลภาพประกอบหรือหลักฐานเพิ่มเติม">${escapeHtml(lossState.reportData.pictureNote || "")}</textarea>
+          </div>
+          <div class="panel loss-sign-panel">
+            <h4>Approval / Signature</h4>
+            <div class="loss-sign-grid">
+              <div class="field"><label>Prepared by</label><input id="lossPreparedBy" value="${escapeHtml(lossState.reportData.preparedBy || "")}" ${lossState.editMode ? "" : "disabled"} /></div>
+              <div class="field"><label>Reported by</label><input id="lossReportedBy" value="${escapeHtml(lossState.reportData.reportedBy || "")}" ${lossState.editMode ? "" : "disabled"} /></div>
+              <div class="field"><label>Checked by</label><input id="lossCheckedBy" value="${escapeHtml(lossState.reportData.checkedBy || "")}" ${lossState.editMode ? "" : "disabled"} /></div>
+              <div class="field"><label>Verified by</label><input id="lossVerifiedBy" value="${escapeHtml(lossState.reportData.verifiedBy || "")}" ${lossState.editMode ? "" : "disabled"} /></div>
+              <div class="field"><label>Acknowledge by</label><input id="lossAcknowledgeBy" value="${escapeHtml(lossState.reportData.acknowledgeBy || "")}" ${lossState.editMode ? "" : "disabled"} /></div>
+              <div class="field"><label>Approved by</label><input id="lossApprovedBy" value="${escapeHtml(lossState.reportData.approvedBy || "")}" ${lossState.editMode ? "" : "disabled"} /></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  bindLossDamageEvents();
+}
+function refreshLossLiveTotals(){
+  lossState.reportData.lines.forEach((line, index) => {
+    const totals = lossLineTotals(line);
+    const costEl = document.getElementById(`lossCostTotal_${index}`);
+    const saleEl = document.getElementById(`lossSaleTotal_${index}`);
+    if (costEl) costEl.textContent = formatNumber(totals.costTotal);
+    if (saleEl) saleEl.textContent = formatNumber(totals.sellingExVat);
+  });
+  const totals = lossTotals();
+  const grandCost = document.getElementById("lossGrandCost");
+  const grandSale = document.getElementById("lossGrandSale");
+  const grandVat = document.getElementById("lossGrandVat");
+  const statCost = document.getElementById("lossStatCost");
+  const statSale = document.getElementById("lossStatSale");
+  if (grandCost) grandCost.textContent = formatNumber(totals.cost);
+  if (grandSale) grandSale.textContent = formatNumber(totals.sellingExVat);
+  if (grandVat) grandVat.textContent = formatNumber(totals.sellingIncVat);
+  if (statCost) statCost.textContent = formatNumber(totals.cost);
+  if (statSale) statSale.textContent = formatNumber(totals.sellingIncVat);
+}
+function bindLossDamageEvents(){
+  document.getElementById("backBtn")?.remove(); // just in case
+  const dateInput = document.getElementById("lossDateInput");
+  const outletDept = document.getElementById("lossOutletDept");
+  const pictureNote = document.getElementById("lossPictureNote");
+  const signMap = {
+    preparedBy: document.getElementById("lossPreparedBy"),
+    reportedBy: document.getElementById("lossReportedBy"),
+    checkedBy: document.getElementById("lossCheckedBy"),
+    verifiedBy: document.getElementById("lossVerifiedBy"),
+    acknowledgeBy: document.getElementById("lossAcknowledgeBy"),
+    approvedBy: document.getElementById("lossApprovedBy")
+  };
+
+  dateInput.addEventListener("change", () => {
+    if (!canDiscardLossEdits()) {
+      dateInput.value = lossState.currentDate;
+      return;
+    }
+    loadLossReport(dateInput.value || todayValue());
+    lossState.editMode = false;
+    lossState.dirty = false;
+    renderLossDamageModule();
+  });
+
+  document.getElementById("lossEditBtn").addEventListener("click", () => {
+    if (lossState.editMode) return;
+    lossState.savedSnapshot = cloneDeep(lossState.reportData);
+    lossState.editMode = true;
+    lossState.dirty = false;
+    renderLossDamageModule();
+  });
+
+  document.getElementById("lossSaveBtn").addEventListener("click", () => {
+    if (!lossState.editMode) {
+      alert("กรุณากด EDIT ก่อน แล้วค่อยกด SAVE");
+      return;
+    }
+    saveLossReport();
+    lossState.savedSnapshot = cloneDeep(lossState.reportData);
+    lossState.editMode = false;
+    lossState.dirty = false;
+    renderLossDamageModule();
+  });
+
+  document.getElementById("lossCancelBtn").addEventListener("click", () => {
+    if (!lossState.editMode) {
+      alert("ยังไม่มีการแก้ไขให้ยกเลิก");
+      return;
+    }
+    lossState.reportData = lossState.savedSnapshot ? cloneDeep(lossState.savedSnapshot) : createEmptyLossReport(lossState.currentDate);
+    lossState.editMode = false;
+    lossState.dirty = false;
+    renderLossDamageModule();
+  });
+
+  document.getElementById("lossExportBtn").addEventListener("click", () => {
+    downloadFile(`laya-loss-damage-${lossState.currentDate}.csv`, toCSV(lossExportRows()));
+  });
+
+  document.getElementById("lossClearBtn").addEventListener("click", () => {
+    if (!confirm(`ลบข้อมูลของรายงานวันที่ ${lossState.currentDate} ?`)) return;
+    lossState.reportData = createEmptyLossReport(lossState.currentDate);
+    lossState.savedSnapshot = cloneDeep(lossState.reportData);
+    lossState.editMode = false;
+    lossState.dirty = false;
+    saveLossReport();
+    renderLossDamageModule();
+  });
+
+  if (outletDept) {
+    outletDept.addEventListener("input", (event) => {
+      lossState.reportData.outletDept = event.target.value;
+      lossState.dirty = true;
+    });
+  }
+  if (pictureNote) {
+    pictureNote.addEventListener("input", (event) => {
+      lossState.reportData.pictureNote = event.target.value;
+      lossState.dirty = true;
+    });
+  }
+  Object.entries(signMap).forEach(([field, el]) => {
+    if (!el) return;
+    el.addEventListener("input", (event) => {
+      lossState.reportData[field] = event.target.value;
+      lossState.dirty = true;
+    });
+  });
+
+  document.querySelectorAll(".loss-input").forEach(input => {
+    input.addEventListener("input", (event) => {
+      const lineIndex = Number(event.target.dataset.line);
+      const field = event.target.dataset.field;
+      let value = event.target.value;
+      if (["qty", "recoveryCost", "recoverySelling"].includes(field)) {
+        value = value === "" ? "" : Number(value);
+      }
+      lossState.reportData.lines[lineIndex][field] = value;
+      lossState.dirty = true;
+      refreshLossLiveTotals();
+    });
+  });
+
+  refreshLossLiveTotals();
+}
+
 function renderMealPlanModule(activeTab = "summary") {
   mealState.keepTab = activeTab;
   dashboardView.classList.remove("active");
@@ -1152,6 +1582,7 @@ function renderMealPlanModule(activeTab = "summary") {
 }
 function showModule(moduleId){
   if (moduleId === "meal-plan-record") return renderMealPlanModule(mealState.keepTab || "summary");
+  if (moduleId === "loss-damage") return renderLossDamageModule();
   return showGenericModule(moduleId);
 }
 
@@ -1165,6 +1596,8 @@ function exportAllData(){
         month: mealState.month + 1,
         data: mealState.monthData
       };
+    } else if (module.id === "loss-damage") {
+      bundle[module.id] = exportAllLossReports();
     } else {
       bundle[module.id] = getRecords(module.id);
     }
@@ -1200,6 +1633,7 @@ function boot(){
   fillFirebaseForm(loadFirebaseConfigFromStorage());
   initFirebaseIfPossible();
   loadLocalMonthData();
+  loadLossReport(lossState.currentDate);
   loadMonthFromFirebaseIfConnected().finally(() => {
     mealState.editMode = false;
     mealState.dirty = false;
