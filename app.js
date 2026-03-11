@@ -26,6 +26,8 @@ const LINEN_LOG_REPORT_PREFIX = "layaLinenRecord::report::";
 const LINEN_LOG_TEMPLATE_ROWS = 28;
 const DAILY_LINEN_CHECK_PREFIX = "layaDailyLinenChecklist::report::";
 const DAILY_LINEN_TEMPLATE_ROWS = 8;
+const EQUIPMENT_REPORT_PREFIX = "layaEquipmentInventory::report::";
+const EQUIPMENT_TEMPLATE_ROWS = 10;
 
 const modules = [
   {
@@ -316,6 +318,7 @@ function moduleCount(){
     else if (m.id === "linen-inventory") total += linenReportCount();
     else if (m.id === "linen-record") total += linenLogReportCount();
     else if (m.id === "daily-linen-inspection-check-list") total += dailyLinenReportCount();
+    else if (m.id === "equipment-inventory") total += equipmentReportCount();
     else total += getRecords(m.id).length;
   });
   return total;
@@ -369,7 +372,9 @@ function renderDashboard(){
               ? linenLogReportCount()
               : module.id === "daily-linen-inspection-check-list"
                 ? dailyLinenReportCount()
-                : getRecords(module.id).length
+                : module.id === "equipment-inventory"
+                  ? equipmentReportCount()
+                  : getRecords(module.id).length
   }));
 
   dashboardView.innerHTML = `
@@ -401,7 +406,7 @@ function renderDashboard(){
             <p>${module.description}</p>
           </div>
           <div class="module-bottom">
-            <div class="meta">${module.id === "meal-plan-record" ? "Month cover" : (module.id === "linen-inventory" || module.id === "linen-record" || module.id === "daily-linen-inspection-check-list") ? "Saved reports" : "Records saved"}: <strong>${module.count}</strong></div>
+            <div class="meta">${module.id === "meal-plan-record" ? "Month cover" : (module.id === "linen-inventory" || module.id === "linen-record" || module.id === "daily-linen-inspection-check-list" || module.id === "equipment-inventory") ? "Saved reports" : "Records saved"}: <strong>${module.count}</strong></div>
             <button class="open-btn" data-open-module="${module.id}">Open Module</button>
           </div>
         </article>
@@ -4239,6 +4244,585 @@ function bindDailyLinenInspectionEvents(){
   });
 }
 
+
+/* Equipment Inventory custom report */
+let equipmentState = {
+  year: new Date().getFullYear(),
+  month: new Date().getMonth(),
+  reportData: null,
+  savedSnapshot: null,
+  editMode: false,
+  dirty: false
+};
+
+function equipmentPeriodKey(year = equipmentState.year, month = equipmentState.month){
+  return `${year}-${String(month + 1).padStart(2, "0")}`;
+}
+function equipmentStorageKey(year = equipmentState.year, month = equipmentState.month){
+  return `${EQUIPMENT_REPORT_PREFIX}${equipmentPeriodKey(year, month)}`;
+}
+function createEmptyEquipmentLine(index){
+  const monthlyCount = {};
+  for (let m = 1; m <= 12; m += 1) monthlyCount[m] = "";
+  return {
+    itemName: "",
+    category: "",
+    modelSpec: "",
+    location: "",
+    unit: "PCS",
+    minPar: "",
+    onHand: "",
+    needRepair: "",
+    monthlyCount,
+    remark: "",
+    images: []
+  };
+}
+function createEmptyEquipmentReport(year = equipmentState.year, month = equipmentState.month){
+  return {
+    outletDept: "",
+    updateMonth: month,
+    updateYear: year,
+    note: "",
+    lines: Array.from({ length: EQUIPMENT_TEMPLATE_ROWS }, (_, i) => createEmptyEquipmentLine(i)),
+    updatedAt: new Date().toISOString()
+  };
+}
+function mergeEquipmentReport(base, incoming){
+  const merged = cloneDeep(base);
+  if (incoming && typeof incoming === "object"){
+    Object.assign(merged, incoming);
+    if (Array.isArray(incoming.lines)){
+      const rowCount = Math.max(EQUIPMENT_TEMPLATE_ROWS, incoming.lines.length);
+      merged.lines = Array.from({ length: rowCount }, (_, i) => {
+        const row = { ...createEmptyEquipmentLine(i), ...(incoming.lines[i] || {}) };
+        row.monthlyCount = { ...createEmptyEquipmentLine(i).monthlyCount, ...((incoming.lines[i] && incoming.lines[i].monthlyCount) || {}) };
+        row.images = Array.isArray(incoming.lines[i]?.images) ? incoming.lines[i].images : [];
+        return row;
+      });
+    }
+  }
+  return merged;
+}
+function loadEquipmentReport(year = equipmentState.year, month = equipmentState.month){
+  equipmentState.year = year;
+  equipmentState.month = month;
+  try{
+    const raw = localStorage.getItem(equipmentStorageKey(year, month));
+    if (!raw){
+      equipmentState.reportData = createEmptyEquipmentReport(year, month);
+      equipmentState.savedSnapshot = cloneDeep(equipmentState.reportData);
+      return;
+    }
+    equipmentState.reportData = mergeEquipmentReport(createEmptyEquipmentReport(year, month), JSON.parse(raw));
+    equipmentState.savedSnapshot = cloneDeep(equipmentState.reportData);
+  } catch (error){
+    console.error(error);
+    equipmentState.reportData = createEmptyEquipmentReport(year, month);
+    equipmentState.savedSnapshot = cloneDeep(equipmentState.reportData);
+  }
+}
+function saveEquipmentReport(){
+  equipmentState.reportData.updatedAt = new Date().toISOString();
+  equipmentState.reportData.updateMonth = equipmentState.month;
+  equipmentState.reportData.updateYear = equipmentState.year;
+  localStorage.setItem(equipmentStorageKey(), JSON.stringify(equipmentState.reportData));
+}
+function equipmentReportCount(){
+  let count = 0;
+  for (let i = 0; i < localStorage.length; i += 1){
+    const key = localStorage.key(i);
+    if (key && key.startsWith(EQUIPMENT_REPORT_PREFIX)) count += 1;
+  }
+  return count;
+}
+function exportAllEquipmentReports(){
+  const bundle = {};
+  for (let i = 0; i < localStorage.length; i += 1){
+    const key = localStorage.key(i);
+    if (!key || !key.startsWith(EQUIPMENT_REPORT_PREFIX)) continue;
+    try {
+      bundle[key.replace(EQUIPMENT_REPORT_PREFIX, "")] = JSON.parse(localStorage.getItem(key));
+    } catch (error) {
+      console.error(error);
+    }
+  }
+  return bundle;
+}
+function flattenEquipmentImages(reportData){
+  return (reportData?.lines || []).flatMap(line => Array.isArray(line.images) ? line.images : []);
+}
+function canDiscardEquipmentEdits(){
+  if (!equipmentState.editMode || !equipmentState.dirty) return true;
+  return confirm("มีการแก้ไขที่ยังไม่ได้บันทึก ต้องการออกหรือเปลี่ยนเดือนต่อหรือไม่?");
+}
+function equipmentTotalNeed(line){
+  return Math.max(Number(line.minPar || 0) - Number(line.onHand || 0), 0);
+}
+function equipmentMonthDisplay(line, monthIndex){
+  return Number((line.monthlyCount || {})[monthIndex] || 0);
+}
+function equipmentTotals(){
+  return equipmentState.reportData.lines.reduce((acc, line) => {
+    acc.onHand += Number(line.onHand || 0);
+    acc.needRepair += Number(line.needRepair || 0);
+    acc.needOrder += equipmentTotalNeed(line);
+    for (let m = 1; m <= 12; m += 1){
+      acc.monthly[m] += equipmentMonthDisplay(line, m);
+    }
+    return acc;
+  }, {
+    onHand: 0,
+    needRepair: 0,
+    needOrder: 0,
+    monthly: Object.fromEntries(Array.from({ length: 12 }, (_, i) => [i + 1, 0]))
+  });
+}
+function equipmentExportRows(){
+  return equipmentState.reportData.lines.map((line, index) => {
+    const row = {
+      periodKey: equipmentPeriodKey(),
+      updateMonth: MONTHS[equipmentState.month],
+      year: equipmentState.year,
+      outletDept: equipmentState.reportData.outletDept,
+      rowIndex: index + 1,
+      itemName: line.itemName,
+      category: line.category,
+      modelSpec: line.modelSpec,
+      location: line.location,
+      unit: line.unit,
+      minPar: line.minPar,
+      onHand: line.onHand,
+      needRepair: line.needRepair,
+      needOrder: equipmentTotalNeed(line),
+      remark: line.remark,
+      imageCount: (line.images || []).length
+    };
+    for (let m = 1; m <= 12; m += 1){
+      row[`month${m}`] = (line.monthlyCount || {})[m] || "";
+    }
+    return row;
+  });
+}
+function equipmentInput(lineIndex, field, value, type = "text", placeholder = ""){
+  const numeric = ["minPar", "onHand", "needRepair"].includes(field);
+  return `<input class="cell-input equipment-input ${numeric ? "linen-number-input" : "equipment-text-input"}" data-line="${lineIndex}" data-field="${field}" type="${type}" inputmode="${numeric ? "numeric" : "text"}" min="${numeric ? "0" : ""}" value="${escapeHtml(value || "")}" placeholder="${escapeHtml(placeholder)}" ${equipmentState.editMode ? "" : "disabled"} />`;
+}
+function equipmentMonthInput(lineIndex, monthIndex, value){
+  return `<input class="cell-input linen-number-input equipment-month-input" data-line="${lineIndex}" data-month="${monthIndex}" type="number" inputmode="numeric" min="0" max="9999" value="${escapeHtml(value || "")}" ${equipmentState.editMode ? "" : "disabled"} />`;
+}
+function renderEquipmentRowImages(lineIndex, images, editMode){
+  const list = Array.isArray(images) ? images : [];
+  return `
+    <div class="equipment-row-media">
+      <label class="mini-upload-label ${editMode ? "" : "disabled"}">
+        <span>Upload</span>
+        <input type="file" class="equipment-row-photo-input" data-line="${lineIndex}" accept="image/*" multiple ${editMode ? "" : "disabled"} />
+      </label>
+      ${list.length ? `
+        <div class="equipment-thumb-list">
+          ${list.map(image => `
+            <div class="equipment-thumb-card">
+              <button type="button" class="equipment-thumb" data-view-image="${escapeHtml(image.url)}">
+                <img src="${escapeHtml(image.url)}" alt="${escapeHtml(image.name || "image")}" />
+              </button>
+              ${editMode ? `<button type="button" class="equipment-remove-thumb" data-equipment-line="${lineIndex}" data-equipment-remove-image="${escapeHtml(image.id)}">×</button>` : ""}
+            </div>
+          `).join("")}
+        </div>
+      ` : `<div class="equipment-row-empty">No image</div>`}
+    </div>
+  `;
+}
+function exportEquipmentReportDocument(){
+  const totals = equipmentTotals();
+  const bodyHtml = `
+    <section class="hero">
+      <div class="eyebrow">Laya Resort Phuket</div>
+      <h1>Equipment Inventory Update ${escapeHtml(MONTHS[equipmentState.month])} ${equipmentState.year}</h1>
+      <div class="meta-grid">
+        <div class="meta-field">
+          <div class="label">Outlets / Department</div>
+          <div class="value">${escapeHtml(equipmentState.reportData.outletDept || "-")}</div>
+        </div>
+        <div class="meta-field">
+          <div class="label">Period Key</div>
+          <div class="value">${escapeHtml(equipmentPeriodKey())}</div>
+        </div>
+      </div>
+      <div class="grid">
+        <div class="stat sand"><div class="label">Total On-hand</div><div class="value">${formatNumber(totals.onHand)}</div></div>
+        <div class="stat mint"><div class="label">Need Repair</div><div class="value">${formatNumber(totals.needRepair)}</div></div>
+        <div class="stat sky"><div class="label">Need Order</div><div class="value">${formatNumber(totals.needOrder)}</div></div>
+      </div>
+    </section>
+
+    <section class="block">
+      <table>
+        <thead>
+          <tr>
+            <th>Item Name</th>
+            <th>Category</th>
+            <th>Model / Spec</th>
+            <th>Location</th>
+            <th>Unit</th>
+            <th>Min Par</th>
+            <th>On-hand</th>
+            <th>Need Repair</th>
+            <th>Need Order</th>
+            ${MONTHS.map(m => `<th>${escapeHtml(m)}</th>`).join("")}
+            <th>Remark</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${equipmentState.reportData.lines.map(line => `
+            <tr>
+              <td>${escapeHtml(line.itemName || "")}</td>
+              <td>${escapeHtml(line.category || "")}</td>
+              <td>${escapeHtml(line.modelSpec || "")}</td>
+              <td>${escapeHtml(line.location || "")}</td>
+              <td>${escapeHtml(line.unit || "")}</td>
+              <td class="num">${formatNumber(line.minPar || 0)}</td>
+              <td class="num">${formatNumber(line.onHand || 0)}</td>
+              <td class="num">${formatNumber(line.needRepair || 0)}</td>
+              <td class="num">${formatNumber(equipmentTotalNeed(line))}</td>
+              ${Array.from({ length: 12 }, (_, i) => `<td class="num">${formatNumber(equipmentMonthDisplay(line, i + 1))}</td>`).join("")}
+              <td>${escapeHtml(line.remark || "")}</td>
+            </tr>
+          `).join("")}
+          <tr class="totals">
+            <td colspan="6">Totals</td>
+            <td class="num">${formatNumber(totals.onHand)}</td>
+            <td class="num">${formatNumber(totals.needRepair)}</td>
+            <td class="num">${formatNumber(totals.needOrder)}</td>
+            ${Array.from({ length: 12 }, (_, i) => `<td class="num">${formatNumber(totals.monthly[i + 1])}</td>`).join("")}
+            <td></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="block">
+      <h3>Evidence by Item</h3>
+      ${equipmentState.reportData.lines.some(line => (line.images || []).length) ? `
+        <div class="images">
+          ${equipmentState.reportData.lines
+            .filter(line => (line.images || []).length)
+            .map(line => `
+              <div class="note-box" style="grid-column: 1 / -1;">
+                <strong>${escapeHtml(line.itemName || "-")}</strong> — ${escapeHtml(line.location || "-")}
+              </div>
+              ${(line.images || []).map(image => `
+                <div class="image-card">
+                  <img src="${escapeHtml(image.url)}" alt="${escapeHtml(image.name || "image")}" />
+                  <div class="image-meta">
+                    <div class="image-name">${escapeHtml(image.name || "image")}</div>
+                    <div class="image-sub">${bytesToLabel(image.size)} • ${Number(image.width || 0)}×${Number(image.height || 0)}</div>
+                  </div>
+                </div>
+              `).join("")}
+            `).join("")}
+        </div>` : `<div class="note-box">No attached photos</div>`}
+    </section>
+
+    <section class="block">
+      <h3>Equipment Inventory Note</h3>
+      <div class="note-box">${escapeHtml(equipmentState.reportData.note || "-").replace(/\n/g, "<br>")}</div>
+    </section>
+  `;
+  reportWindowBase(`Equipment-Inventory-${equipmentPeriodKey()}`, bodyHtml);
+}
+function renderEquipmentInventoryModule(){
+  if (!equipmentState.reportData) loadEquipmentReport(equipmentState.year, equipmentState.month);
+
+  dashboardView.classList.remove("active");
+  moduleView.classList.add("active");
+  renderNav("equipment-inventory");
+  history.replaceState({}, "", "#equipment-inventory");
+
+  const totals = equipmentTotals();
+
+  moduleView.innerHTML = `
+    <div class="module-shell">
+      <div class="module-header">
+        <div class="module-header-top">
+          <div><button class="back-btn" id="backBtn">← กลับหน้าเมนูหลัก</button></div>
+        </div>
+        <div class="module-title-row" style="margin-top:18px">
+          <div class="module-icon-large color-green">🛠️</div>
+          <div>
+            <h3>LAYA EQUIPMENT INVENTORY</h3>
+            <p>หน้าบันทึกอุปกรณ์แบบใช้งานจริง เพิ่มไอเทมได้เอง ใส่จำนวนคงเหลือ นับของทุกเดือน และแนบรูปในแต่ละแถวได้</p>
+          </div>
+        </div>
+
+        <div class="kpi-grid" style="margin-top:18px">
+          <div class="kpi-card"><div class="small">Saved Reports</div><div class="big">${equipmentReportCount()}</div></div>
+          <div class="kpi-card"><div class="small">On-hand</div><div class="big">${formatNumber(totals.onHand)}</div></div>
+          <div class="kpi-card"><div class="small">Need Repair</div><div class="big">${formatNumber(totals.needRepair)}</div></div>
+          <div class="kpi-card"><div class="small">Need Order</div><div class="big">${formatNumber(totals.needOrder)}</div></div>
+        </div>
+
+        <div class="equipment-toolbar-grid">
+          <div class="field compact-field"><label>Year</label><input type="number" id="equipmentYearInput" min="2024" max="2100" value="${equipmentState.year}" /></div>
+          <div class="field compact-field"><label>Month</label><select id="equipmentMonthInput">${MONTHS.map((m, idx) => `<option value="${idx}" ${idx === equipmentState.month ? "selected" : ""}>${m}</option>`).join("")}</select></div>
+          <div class="field period-field"><label>Period Key</label><input type="text" id="equipmentPeriodKey" value="${equipmentPeriodKey()}" readonly /></div>
+          <div class="field equipment-outlet-field"><label>Outlets / Department</label><input id="equipmentOutletDept" value="${escapeHtml(equipmentState.reportData.outletDept || "")}" ${equipmentState.editMode ? "" : "disabled"} placeholder="Equipment store / outlet / department" /></div>
+        </div>
+
+        <div class="meal-toolbar-actions">
+          <button class="btn ${equipmentState.editMode ? "btn-soft" : "primary"}" id="equipmentEditBtn">EDIT</button>
+          <button class="btn ${equipmentState.editMode ? "primary" : "btn-soft"}" id="equipmentSaveBtn">SAVE</button>
+          <button class="btn ${equipmentState.editMode ? "" : "btn-soft"}" id="equipmentCancelBtn">CANCEL</button>
+          <button class="btn" id="equipmentAddRowBtn">ADD ROW</button>
+          <button class="btn" id="equipmentExportReportBtn">Export Report</button>
+          <button class="btn" id="equipmentExportBtn">Export CSV</button>
+          <button class="btn danger" id="equipmentClearBtn">Clear Report</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-sub">Equipment inventory update for ${MONTHS[equipmentState.month]} ${equipmentState.year}</div>
+        <div class="table-wrap equipment-table-wrap">
+          <table class="summary-table equipment-summary-table">
+            <thead>
+              <tr class="summary-head-main">
+                <th rowspan="2" class="item-col">Item Name</th>
+                <th rowspan="2">Category</th>
+                <th rowspan="2" class="item-col">Model / Spec</th>
+                <th rowspan="2" class="item-col">Location</th>
+                <th rowspan="2">Unit</th>
+                <th rowspan="2">Min Par</th>
+                <th rowspan="2">On-hand</th>
+                <th rowspan="2">Need Repair</th>
+                <th rowspan="2">Need Order</th>
+                <th colspan="12">${equipmentState.year}</th>
+                <th rowspan="2" class="item-col">Remark</th>
+                <th rowspan="2" class="equipment-evidence-col">Evidence</th>
+              </tr>
+              <tr>
+                ${MONTHS.map(m => `<th class="equipment-month-head">${escapeHtml(m.slice(0,3))}</th>`).join("")}
+              </tr>
+            </thead>
+            <tbody>
+              ${equipmentState.reportData.lines.map((line, index) => `
+                <tr>
+                  <td class="item-col">${equipmentInput(index, "itemName", line.itemName, "text", "เช่น Wine Glass Rack")}</td>
+                  <td>${equipmentInput(index, "category", line.category, "text", "Bar / Service / Store")}</td>
+                  <td class="item-col">${equipmentInput(index, "modelSpec", line.modelSpec, "text", "Model / size / brand")}</td>
+                  <td class="item-col">${equipmentInput(index, "location", line.location, "text", "Storage / outlet")}</td>
+                  <td>${equipmentInput(index, "unit", line.unit, "text", "PCS")}</td>
+                  <td>${equipmentInput(index, "minPar", line.minPar, "number")}</td>
+                  <td>${equipmentInput(index, "onHand", line.onHand, "number")}</td>
+                  <td>${equipmentInput(index, "needRepair", line.needRepair, "number")}</td>
+                  <td><div class="linen-derived">${formatNumber(equipmentTotalNeed(line))}</div></td>
+                  ${Array.from({ length: 12 }, (_, i) => `<td>${equipmentMonthInput(index, i + 1, (line.monthlyCount || {})[i + 1])}</td>`).join("")}
+                  <td class="item-col">${equipmentInput(index, "remark", line.remark, "text", "Remark")}</td>
+                  <td class="equipment-evidence-cell">${renderEquipmentRowImages(index, line.images, equipmentState.editMode)}</td>
+                </tr>
+              `).join("")}
+              <tr class="total-row">
+                <td colspan="6">Total</td>
+                <td>${formatNumber(totals.onHand)}</td>
+                <td>${formatNumber(totals.needRepair)}</td>
+                <td>${formatNumber(totals.needOrder)}</td>
+                ${Array.from({ length: 12 }, (_, i) => `<td>${formatNumber(totals.monthly[i + 1])}</td>`).join("")}
+                <td></td>
+                <td></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="equipment-bottom-grid">
+        <div class="panel">
+          <h4>Equipment Inventory Note</h4>
+          <textarea id="equipmentNote" class="loss-note-area" ${equipmentState.editMode ? "" : "disabled"} placeholder="หมายเหตุเพิ่มเติม เช่น ของชำรุดต้องซ่อม / รอสั่งซื้อ / ย้าย location">${escapeHtml(equipmentState.reportData.note || "")}</textarea>
+        </div>
+      </div>
+    </div>
+  `;
+
+  bindEquipmentInventoryEvents();
+}
+function bindEquipmentInventoryEvents(){
+  document.getElementById("backBtn").addEventListener("click", () => {
+    if (!canDiscardEquipmentEdits()) return;
+    equipmentState.editMode = false;
+    equipmentState.dirty = false;
+    if (equipmentState.savedSnapshot) equipmentState.reportData = cloneDeep(equipmentState.savedSnapshot);
+    showDashboard();
+  });
+
+  const yearInput = document.getElementById("equipmentYearInput");
+  const monthInput = document.getElementById("equipmentMonthInput");
+  const outletInput = document.getElementById("equipmentOutletDept");
+  const noteInput = document.getElementById("equipmentNote");
+
+  yearInput.addEventListener("change", () => {
+    const nextYear = Number(yearInput.value || new Date().getFullYear());
+    if (!canDiscardEquipmentEdits()) {
+      yearInput.value = equipmentState.year;
+      return;
+    }
+    loadEquipmentReport(nextYear, equipmentState.month);
+    equipmentState.editMode = false;
+    equipmentState.dirty = false;
+    renderEquipmentInventoryModule();
+  });
+
+  monthInput.addEventListener("change", () => {
+    const nextMonth = Number(monthInput.value);
+    if (!canDiscardEquipmentEdits()) {
+      monthInput.value = String(equipmentState.month);
+      return;
+    }
+    loadEquipmentReport(equipmentState.year, nextMonth);
+    equipmentState.editMode = false;
+    equipmentState.dirty = false;
+    renderEquipmentInventoryModule();
+  });
+
+  document.getElementById("equipmentEditBtn").addEventListener("click", () => {
+    if (equipmentState.editMode) return;
+    equipmentState.savedSnapshot = cloneDeep(equipmentState.reportData);
+    equipmentState.editMode = true;
+    equipmentState.dirty = false;
+    renderEquipmentInventoryModule();
+  });
+
+  document.getElementById("equipmentSaveBtn").addEventListener("click", () => {
+    if (!equipmentState.editMode) {
+      alert("กรุณากด EDIT ก่อน แล้วค่อยกด SAVE");
+      return;
+    }
+    saveEquipmentReport();
+    equipmentState.savedSnapshot = cloneDeep(equipmentState.reportData);
+    equipmentState.editMode = false;
+    equipmentState.dirty = false;
+    renderEquipmentInventoryModule();
+  });
+
+  document.getElementById("equipmentCancelBtn").addEventListener("click", () => {
+    if (!equipmentState.editMode) {
+      alert("ยังไม่มีการแก้ไขให้ยกเลิก");
+      return;
+    }
+    const currentImages = flattenEquipmentImages(equipmentState.reportData);
+    const snapshotImages = flattenEquipmentImages(equipmentState.savedSnapshot || {});
+    equipmentState.reportData = equipmentState.savedSnapshot ? cloneDeep(equipmentState.savedSnapshot) : createEmptyEquipmentReport(equipmentState.year, equipmentState.month);
+    equipmentState.editMode = false;
+    equipmentState.dirty = false;
+    renderEquipmentInventoryModule();
+    cleanupAddedImages(currentImages, snapshotImages).catch(console.error);
+  });
+
+  document.getElementById("equipmentAddRowBtn").addEventListener("click", () => {
+    if (!equipmentState.editMode) {
+      alert("กรุณากด EDIT ก่อน แล้วค่อยเพิ่มแถว");
+      return;
+    }
+    equipmentState.reportData.lines.push(createEmptyEquipmentLine(equipmentState.reportData.lines.length));
+    equipmentState.dirty = true;
+    renderEquipmentInventoryModule();
+  });
+
+  document.getElementById("equipmentExportReportBtn").addEventListener("click", () => {
+    exportEquipmentReportDocument();
+  });
+
+  document.getElementById("equipmentExportBtn").addEventListener("click", () => {
+    downloadFile(`laya-equipment-inventory-${equipmentPeriodKey()}.csv`, toCSV(equipmentExportRows()));
+  });
+
+  document.getElementById("equipmentClearBtn").addEventListener("click", () => {
+    if (!confirm(`ลบข้อมูลของรายงาน ${equipmentPeriodKey()} ?`)) return;
+    const oldImages = flattenEquipmentImages(equipmentState.reportData);
+    equipmentState.reportData = createEmptyEquipmentReport(equipmentState.year, equipmentState.month);
+    equipmentState.savedSnapshot = cloneDeep(equipmentState.reportData);
+    equipmentState.editMode = false;
+    equipmentState.dirty = false;
+    saveEquipmentReport();
+    renderEquipmentInventoryModule();
+    oldImages.forEach(image => deleteStorageFileIfPossible(image.storagePath));
+  });
+
+  if (outletInput) outletInput.addEventListener("input", (event) => {
+    equipmentState.reportData.outletDept = event.target.value;
+    equipmentState.dirty = true;
+  });
+  if (noteInput) noteInput.addEventListener("input", (event) => {
+    equipmentState.reportData.note = event.target.value;
+    equipmentState.dirty = true;
+  });
+
+  document.querySelectorAll(".equipment-input").forEach(input => {
+    input.addEventListener("change", (event) => {
+      const lineIndex = Number(event.target.dataset.line);
+      const field = event.target.dataset.field;
+      let value = event.target.value;
+      if (["minPar", "onHand", "needRepair"].includes(field)) {
+        value = value === "" ? "" : Number(value);
+      }
+      equipmentState.reportData.lines[lineIndex][field] = value;
+      equipmentState.dirty = true;
+      renderEquipmentInventoryModule();
+    });
+  });
+
+  document.querySelectorAll(".equipment-month-input").forEach(input => {
+    input.addEventListener("change", (event) => {
+      const lineIndex = Number(event.target.dataset.line);
+      const monthIndex = Number(event.target.dataset.month);
+      const value = event.target.value === "" ? "" : Number(event.target.value);
+      equipmentState.reportData.lines[lineIndex].monthlyCount[monthIndex] = value;
+      equipmentState.dirty = true;
+      renderEquipmentInventoryModule();
+    });
+  });
+
+  document.querySelectorAll(".equipment-row-photo-input").forEach(input => {
+    input.addEventListener("change", async (event) => {
+      const files = Array.from(event.target.files || []);
+      event.target.value = "";
+      if (!files.length) return;
+      if (!equipmentState.editMode) {
+        alert("กรุณากด EDIT ก่อนอัปโหลดรูป");
+        return;
+      }
+      const lineIndex = Number(event.target.dataset.line);
+      try {
+        const uploaded = await uploadCompressedImagesToStorage("equipment-inventory", `${equipmentPeriodKey()}/row-${lineIndex + 1}`, files);
+        equipmentState.reportData.lines[lineIndex].images = [...(equipmentState.reportData.lines[lineIndex].images || []), ...uploaded];
+        equipmentState.dirty = true;
+        renderEquipmentInventoryModule();
+      } catch (error) {
+        commonImageUploadError(error);
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-view-image]").forEach(btn => {
+    btn.addEventListener("click", () => openImageUrl(btn.dataset.viewImage));
+  });
+
+  document.querySelectorAll("[data-equipment-remove-image]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      if (!equipmentState.editMode) {
+        alert("กรุณากด EDIT ก่อนลบรูป");
+        return;
+      }
+      const lineIndex = Number(btn.dataset.equipmentLine);
+      const imageId = btn.dataset.equipmentRemoveImage;
+      const target = (equipmentState.reportData.lines[lineIndex].images || []).find(image => image.id === imageId);
+      equipmentState.reportData.lines[lineIndex].images = (equipmentState.reportData.lines[lineIndex].images || []).filter(image => image.id !== imageId);
+      equipmentState.dirty = true;
+      renderEquipmentInventoryModule();
+      if (target && target.storagePath) deleteStorageFileIfPossible(target.storagePath);
+    });
+  });
+}
 function showModule(moduleId){
   if (moduleId === "meal-plan-record") return renderMealPlanModule(mealState.keepTab || "summary");
   if (moduleId === "loss-damage") return renderLossDamageModule();
@@ -4246,6 +4830,7 @@ function showModule(moduleId){
   if (moduleId === "linen-inventory") return renderLinenInventoryModule();
   if (moduleId === "linen-record") return renderLinenRecordModule();
   if (moduleId === "daily-linen-inspection-check-list") return renderDailyLinenInspectionModule();
+  if (moduleId === "equipment-inventory") return renderEquipmentInventoryModule();
   return showGenericModule(moduleId);
 }
 
@@ -4269,6 +4854,8 @@ function exportAllData(){
       bundle[module.id] = exportAllLinenLogReports();
     } else if (module.id === "daily-linen-inspection-check-list") {
       bundle[module.id] = exportAllDailyLinenReports();
+    } else if (module.id === "equipment-inventory") {
+      bundle[module.id] = exportAllEquipmentReports();
     } else {
       bundle[module.id] = getRecords(module.id);
     }
@@ -4309,6 +4896,7 @@ function boot(){
   loadLinenReport(linenState.year, linenState.month);
   loadLinenLogReport(linenLogState.currentDate);
   loadDailyLinenReport(dailyLinenState.currentDate);
+  loadEquipmentReport(equipmentState.year, equipmentState.month);
   loadMonthFromFirebaseIfConnected().finally(() => {
     mealState.editMode = false;
     mealState.dirty = false;

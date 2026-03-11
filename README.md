@@ -67,3 +67,13 @@ Added custom LAYA LINEN RECORD module based on the Linen Control Log structure, 
 Added custom LAYA DAILY LINEN INSPECTION CHECK LIST module based on the checklist structure, with EDIT / SAVE / CANCEL and row-level image upload.
 
 Updated Daily Linen Inspection Checklist: inspection item field widened, remark changed to a real text area inside the table cell, and values remain viewable after save.
+
+
+## Added equipment inventory
+Because I could not find a separate equipment template file in the current uploads, the **LAYA EQUIPMENT INVENTORY** page in this version is designed in the same practical style as the custom linen inventory pages:
+- add items freely
+- monthly count Jan–Dec
+- on-hand / repair / need order tracking
+- row-level photo upload
+- EDIT / SAVE / CANCEL
+- Export Report / CSV
