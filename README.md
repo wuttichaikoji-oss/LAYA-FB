@@ -77,3 +77,15 @@ Because I could not find a separate equipment template file in the current uploa
 - row-level photo upload
 - EDIT / SAVE / CANCEL
 - Export Report / CSV
+
+
+## Firebase quick setup for all pages that upload images
+This build uses one shared Firebase connection for every page that uploads photos:
+- LAYA LOSS DAMAGE
+- LAYA BREAKAGE SPOILLED
+- LAYA LINEN INVENTORY
+- LAYA LINEN RECORD
+- LAYA DAILY LINEN INSPECTION CHECK LIST
+- LAYA EQUIPMENT INVENTORY
+
+A new **Firebase Setup** button is available on the main dashboard.
