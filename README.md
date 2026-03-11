@@ -59,3 +59,7 @@ Added: LAYA BREAKAGE SPOILLED custom report module based on uploaded form with E
 - 12-month inventory table with live calculated totals
 - Beautiful export report and CSV export
 - Photo upload section with image compression before upload to Firebase Storage
+
+Updated Linen Inventory: removed No columns from the monthly layout, months accept quantity directly, added ADD ROW, and moved image uploads into each linen row.
+
+Added custom LAYA LINEN RECORD module based on the Linen Control Log structure, with EDIT / SAVE / CANCEL and row-level image upload.

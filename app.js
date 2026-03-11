@@ -22,6 +22,8 @@ const BREAKAGE_REPORT_PREFIX = "layaBreakageSpoiled::report::";
 const BREAKAGE_TEMPLATE_ROWS = 20;
 const LINEN_REPORT_PREFIX = "layaLinenInventory::report::";
 const LINEN_TEMPLATE_ROWS = 7;
+const LINEN_LOG_REPORT_PREFIX = "layaLinenRecord::report::";
+const LINEN_LOG_TEMPLATE_ROWS = 28;
 
 const modules = [
   {
@@ -310,6 +312,7 @@ function moduleCount(){
     else if (m.id === "loss-damage") total += lossReportCount();
     else if (m.id === "breakage-spoiled") total += breakageReportCount();
     else if (m.id === "linen-inventory") total += linenReportCount();
+    else if (m.id === "linen-record") total += linenLogReportCount();
     else total += getRecords(m.id).length;
   });
   return total;
@@ -359,7 +362,9 @@ function renderDashboard(){
           ? breakageReportCount()
           : module.id === "linen-inventory"
             ? linenReportCount()
-            : getRecords(module.id).length
+            : module.id === "linen-record"
+              ? linenLogReportCount()
+              : getRecords(module.id).length
   }));
 
   dashboardView.innerHTML = `
@@ -391,7 +396,7 @@ function renderDashboard(){
             <p>${module.description}</p>
           </div>
           <div class="module-bottom">
-            <div class="meta">${module.id === "meal-plan-record" ? "Month cover" : module.id === "linen-inventory" ? "Saved reports" : "Records saved"}: <strong>${module.count}</strong></div>
+            <div class="meta">${module.id === "meal-plan-record" ? "Month cover" : (module.id === "linen-inventory" || module.id === "linen-record") ? "Saved reports" : "Records saved"}: <strong>${module.count}</strong></div>
             <button class="open-btn" data-open-module="${module.id}">Open Module</button>
           </div>
         </article>
@@ -2616,7 +2621,6 @@ function createEmptyLinenLine(index){
   const monthlyNos = {};
   for (let m = 1; m <= 12; m += 1) monthlyNos[m] = "";
   return {
-    item: index + 1,
     itemName: index === 0 ? "White" : "",
     specification: index === 0 ? 'size 20"x 20"' : "",
     parUpdate: "",
@@ -2625,9 +2629,11 @@ function createEmptyLinenLine(index){
     newOrder: "",
     priceUnit: "",
     monthlyNos,
-    remark: ""
+    remark: "",
+    images: []
   };
 }
+
 function createEmptyLinenReport(year = linenState.year, month = linenState.month){
   return {
     outletDept: "",
@@ -2644,13 +2650,14 @@ function mergeLinenReport(base, incoming){
   if (incoming && typeof incoming === "object"){
     Object.assign(merged, incoming);
     if (Array.isArray(incoming.lines)){
-      merged.lines = Array.from({ length: LINEN_TEMPLATE_ROWS }, (_, i) => {
+      const rowCount = Math.max(LINEN_TEMPLATE_ROWS, incoming.lines.length);
+      merged.lines = Array.from({ length: rowCount }, (_, i) => {
         const row = {
           ...createEmptyLinenLine(i),
-          ...(incoming.lines[i] || {}),
-          item: i + 1
+          ...(incoming.lines[i] || {})
         };
         row.monthlyNos = { ...createEmptyLinenLine(i).monthlyNos, ...((incoming.lines[i] && incoming.lines[i].monthlyNos) || {}) };
+        row.images = Array.isArray(incoming.lines[i]?.images) ? incoming.lines[i].images : [];
         return row;
       });
     }
@@ -2658,6 +2665,7 @@ function mergeLinenReport(base, incoming){
   }
   return merged;
 }
+
 function loadLinenReport(year = linenState.year, month = linenState.month){
   linenState.year = year;
   linenState.month = month;
@@ -2703,6 +2711,10 @@ function exportAllLinenReports(){
   }
   return bundle;
 }
+
+function flattenLinenLineImages(reportData){
+  return (reportData?.lines || []).flatMap(line => Array.isArray(line.images) ? line.images : []);
+}
 function canDiscardLinenEdits(){
   if (!linenState.editMode || !linenState.dirty) return true;
   return confirm("มีการแก้ไขที่ยังไม่ได้บันทึก ต้องการออกหรือเปลี่ยนงวดรายงานต่อหรือไม่?");
@@ -2728,7 +2740,6 @@ function linenTotals(){
     acc.totalTHB += linenTotalTHB(line);
     for (let m = 1; m <= 12; m += 1){
       acc.monthNos[m] += Number((line.monthlyNos || {})[m] || 0);
-      acc.monthAmounts[m] += linenMonthAmount(line, m);
     }
     return acc;
   }, {
@@ -2737,10 +2748,10 @@ function linenTotals(){
     totalRequired: 0,
     newOrder: 0,
     totalTHB: 0,
-    monthNos: Object.fromEntries(Array.from({ length: 12 }, (_, i) => [i + 1, 0])),
-    monthAmounts: Object.fromEntries(Array.from({ length: 12 }, (_, i) => [i + 1, 0]))
+    monthNos: Object.fromEntries(Array.from({ length: 12 }, (_, i) => [i + 1, 0]))
   });
 }
+
 function linenExportRows(){
   return linenState.reportData.lines.map((line, index) => {
     const row = {
@@ -2748,7 +2759,7 @@ function linenExportRows(){
       updateMonth: MONTHS[linenState.month],
       year: linenState.year,
       outletDept: linenState.reportData.outletDept,
-      item: index + 1,
+      rowIndex: index + 1,
       itemName: line.itemName,
       specification: line.specification,
       parUpdate: line.parUpdate,
@@ -2759,15 +2770,15 @@ function linenExportRows(){
       priceUnit: line.priceUnit,
       totalTHB: linenTotalTHB(line),
       remark: line.remark,
-      imageCount: (linenState.reportData.images || []).length
+      imageCount: (line.images || []).length
     };
     for (let m = 1; m <= 12; m += 1){
-      row[`month${m}_no`] = (line.monthlyNos || {})[m] || "";
-      row[`month${m}_amount`] = linenMonthAmount(line, m);
+      row[`month${m}`] = (line.monthlyNos || {})[m] || "";
     }
     return row;
   });
 }
+
 function exportLinenReportDocument(){
   const totals = linenTotals();
   const bodyHtml = `
@@ -2795,7 +2806,6 @@ function exportLinenReportDocument(){
       <table>
         <thead>
           <tr>
-            <th>No.</th>
             <th>Items</th>
             <th>Specification</th>
             <th>Par Update ${escapeHtml(MONTHS[linenState.month])} ${String(linenState.year).slice(-2)}</th>
@@ -2805,14 +2815,13 @@ function exportLinenReportDocument(){
             <th>New order</th>
             <th>Price / Unit</th>
             <th>Total THB</th>
-            ${MONTHS.map((m) => `<th>${escapeHtml(m)} No</th><th>${escapeHtml(m)} THB</th>`).join("")}
+            ${MONTHS.map((m) => `<th>${escapeHtml(m)}</th>`).join("")}
             <th>Remark</th>
           </tr>
         </thead>
         <tbody>
-          ${linenState.reportData.lines.map((line, index) => `
+          ${linenState.reportData.lines.map((line) => `
             <tr>
-              <td>${index + 1}</td>
               <td>${escapeHtml(line.itemName || "")}</td>
               <td>${escapeHtml(line.specification || "")}</td>
               <td class="num">${formatNumber(line.parUpdate || 0)}</td>
@@ -2824,13 +2833,13 @@ function exportLinenReportDocument(){
               <td class="num">${formatNumber(linenTotalTHB(line))}</td>
               ${Array.from({ length: 12 }, (_, i) => {
                 const m = i + 1;
-                return `<td class="num">${formatNumber((line.monthlyNos || {})[m] || 0)}</td><td class="num">${formatNumber(linenMonthAmount(line, m))}</td>`;
+                return `<td class="num">${formatNumber((line.monthlyNos || {})[m] || 0)}</td>`;
               }).join("")}
               <td>${escapeHtml(line.remark || "")}</td>
             </tr>
           `).join("")}
           <tr class="totals">
-            <td colspan="4">Totals</td>
+            <td colspan="3">Totals</td>
             <td class="num">${formatNumber(totals.onHand)}</td>
             <td class="num">${formatNumber(totals.damaged)}</td>
             <td class="num">${formatNumber(totals.totalRequired)}</td>
@@ -2839,7 +2848,7 @@ function exportLinenReportDocument(){
             <td class="num">${formatNumber(totals.totalTHB)}</td>
             ${Array.from({ length: 12 }, (_, i) => {
               const m = i + 1;
-              return `<td class="num">${formatNumber(totals.monthNos[m])}</td><td class="num">${formatNumber(totals.monthAmounts[m])}</td>`;
+              return `<td class="num">${formatNumber(totals.monthNos[m])}</td>`;
             }).join("")}
             <td></td>
           </tr>
@@ -2848,28 +2857,36 @@ function exportLinenReportDocument(){
     </section>
 
     <section class="block">
-      <h3>Inventory Note</h3>
-      <div class="note-box">${escapeHtml(linenState.reportData.note || "-").replace(/\n/g, "<br>")}</div>
+      <h3>Evidence by Item</h3>
+      ${linenState.reportData.lines.some(line => (line.images || []).length) ? `
+        <div class="images">
+          ${linenState.reportData.lines
+            .filter(line => (line.images || []).length)
+            .map(line => `
+              <div class="note-box" style="grid-column: 1 / -1;">
+                <strong>${escapeHtml(line.itemName || "-")}</strong> — ${escapeHtml(line.specification || "-")}
+              </div>
+              ${(line.images || []).map(image => `
+                <div class="image-card">
+                  <img src="${escapeHtml(image.url)}" alt="${escapeHtml(image.name || "image")}" />
+                  <div class="image-meta">
+                    <div class="image-name">${escapeHtml(image.name || "image")}</div>
+                    <div class="image-sub">${bytesToLabel(image.size)} • ${Number(image.width || 0)}×${Number(image.height || 0)}</div>
+                  </div>
+                </div>
+              `).join("")}
+            `).join("")}
+        </div>` : `<div class="note-box">No attached photos</div>`}
     </section>
 
     <section class="block">
-      <h3>Attached Photos</h3>
-      ${(linenState.reportData.images || []).length ? `
-        <div class="images">
-          ${(linenState.reportData.images || []).map(image => `
-            <div class="image-card">
-              <img src="${escapeHtml(image.url)}" alt="${escapeHtml(image.name || "image")}" />
-              <div class="image-meta">
-                <div class="image-name">${escapeHtml(image.name || "image")}</div>
-                <div class="image-sub">${bytesToLabel(image.size)} • ${Number(image.width || 0)}×${Number(image.height || 0)}</div>
-              </div>
-            </div>
-          `).join("")}
-        </div>` : `<div class="note-box">No attached photos</div>`}
+      <h3>Inventory Note</h3>
+      <div class="note-box">${escapeHtml(linenState.reportData.note || "-").replace(/\n/g, "<br>")}</div>
     </section>
   `;
   reportWindowBase(`Linen-Inventory-${linenPeriodKey()}`, bodyHtml);
 }
+
 function renderLinenInventoryModule(){
   if (!linenState.reportData) loadLinenReport(linenState.year, linenState.month);
 
@@ -2890,7 +2907,7 @@ function renderLinenInventoryModule(){
           <div class="module-icon-large color-blue">📦</div>
           <div>
             <h3>LAYA LINEN INVENTORY</h3>
-            <p>ออกแบบจากต้นแบบ Linen Inventory พร้อมใช้งานจริง มีตารางรายเดือน 12 เดือน, รูปประกอบ, และโหมด EDIT / SAVE / CANCEL</p>
+            <p>ตาราง Linen Inventory แบบใช้งานจริง แก้ไขด้วยโหมด EDIT / SAVE / CANCEL และเพิ่มแถวผ้าได้ตามจำนวนจริง</p>
           </div>
         </div>
 
@@ -2912,6 +2929,7 @@ function renderLinenInventoryModule(){
           <button class="btn ${linenState.editMode ? "btn-soft" : "primary"}" id="linenEditBtn">EDIT</button>
           <button class="btn ${linenState.editMode ? "primary" : "btn-soft"}" id="linenSaveBtn">SAVE</button>
           <button class="btn ${linenState.editMode ? "" : "btn-soft"}" id="linenCancelBtn">CANCEL</button>
+          <button class="btn" id="linenAddRowBtn">ADD ROW</button>
           <button class="btn" id="linenExportReportBtn">Export Report</button>
           <button class="btn" id="linenExportBtn">Export CSV</button>
           <button class="btn danger" id="linenClearBtn">Clear Report</button>
@@ -2921,10 +2939,9 @@ function renderLinenInventoryModule(){
       <div class="panel">
         <div class="panel-sub">F&B Linen inventory Update ${MONTHS[linenState.month]} ${linenState.year}</div>
         <div class="table-wrap linen-table-wrap">
-          <table class="summary-table linen-summary-table">
+          <table class="summary-table linen-summary-table linen-single-month-table">
             <thead>
               <tr class="summary-head-main">
-                <th rowspan="2">No.</th>
                 <th rowspan="2" class="item-col">Items</th>
                 <th rowspan="2" class="item-col">Specification</th>
                 <th rowspan="2">Par Update ${MONTHS[linenState.month]} ${String(linenState.year).slice(-2)}</th>
@@ -2934,41 +2951,36 @@ function renderLinenInventoryModule(){
                 <th rowspan="2">New order</th>
                 <th rowspan="2">Price/Unit</th>
                 <th rowspan="2">Total THB</th>
-                <th colspan="24">${linenState.year}</th>
+                <th colspan="12">${linenState.year}</th>
                 <th rowspan="2" class="item-col">Remark</th>
+                <th rowspan="2" class="linen-evidence-col">Evidence</th>
               </tr>
               <tr>
-                ${MONTHS.map((m) => `
-                  <th class="linen-month-small">No</th>
-                  <th class="linen-month-head">${escapeHtml(m)}</th>
-                `).join("")}
+                ${MONTHS.map((m) => `<th class="linen-month-head linen-month-only">${escapeHtml(m)}</th>`).join("")}
               </tr>
             </thead>
             <tbody>
               ${linenState.reportData.lines.map((line, index) => `
                 <tr>
-                  <td>${index + 1}</td>
-                  <td class="item-col">${linenInput(index, 'itemName', line.itemName, 'text')}</td>
-                  <td class="item-col">${linenInput(index, 'specification', line.specification, 'text')}</td>
-                  <td>${linenInput(index, 'parUpdate', line.parUpdate, 'number')}</td>
-                  <td>${linenInput(index, 'totalOnHand', line.totalOnHand, 'number')}</td>
-                  <td>${linenInput(index, 'damagedLost', line.damagedLost, 'number')}</td>
+                  <td class="item-col">${linenInput(index, "itemName", line.itemName, "text")}</td>
+                  <td class="item-col">${linenInput(index, "specification", line.specification, "text")}</td>
+                  <td>${linenInput(index, "parUpdate", line.parUpdate, "number")}</td>
+                  <td>${linenInput(index, "totalOnHand", line.totalOnHand, "number")}</td>
+                  <td>${linenInput(index, "damagedLost", line.damagedLost, "number")}</td>
                   <td><div class="linen-derived">${formatNumber(linenTotalRequired(line))}</div></td>
-                  <td>${linenInput(index, 'newOrder', line.newOrder, 'number')}</td>
-                  <td>${linenInput(index, 'priceUnit', line.priceUnit, 'number')}</td>
+                  <td>${linenInput(index, "newOrder", line.newOrder, "number")}</td>
+                  <td>${linenInput(index, "priceUnit", line.priceUnit, "number")}</td>
                   <td><div class="linen-derived">${formatNumber(linenTotalTHB(line))}</div></td>
                   ${Array.from({ length: 12 }, (_, i) => {
                     const m = i + 1;
-                    return `
-                      <td>${linenMonthInput(index, m, (line.monthlyNos || {})[m])}</td>
-                      <td><div class="linen-derived">${formatNumber(linenMonthAmount(line, m))}</div></td>
-                    `;
+                    return `<td>${linenMonthInput(index, m, (line.monthlyNos || {})[m])}</td>`;
                   }).join("")}
-                  <td class="item-col">${linenInput(index, 'remark', line.remark, 'text')}</td>
+                  <td class="item-col">${linenInput(index, "remark", line.remark, "text")}</td>
+                  <td class="linen-evidence-cell">${renderLinenRowImages(index, line.images, linenState.editMode)}</td>
                 </tr>
               `).join("")}
               <tr class="total-row">
-                <td colspan="4">Total</td>
+                <td colspan="3">Total</td>
                 <td>${formatNumber(totals.onHand)}</td>
                 <td>${formatNumber(totals.damaged)}</td>
                 <td>${formatNumber(totals.totalRequired)}</td>
@@ -2977,8 +2989,9 @@ function renderLinenInventoryModule(){
                 <td>${formatNumber(totals.totalTHB)}</td>
                 ${Array.from({ length: 12 }, (_, i) => {
                   const m = i + 1;
-                  return `<td>${formatNumber(totals.monthNos[m])}</td><td>${formatNumber(totals.monthAmounts[m])}</td>`;
+                  return `<td>${formatNumber(totals.monthNos[m])}</td>`;
                 }).join("")}
+                <td></td>
                 <td></td>
               </tr>
             </tbody>
@@ -2987,17 +3000,6 @@ function renderLinenInventoryModule(){
       </div>
 
       <div class="linen-bottom-grid">
-        <div class="panel">
-          <h4>Photos</h4>
-          <div class="upload-toolbar">
-            <label class="upload-label ${linenState.editMode ? "" : "disabled"}">
-              <span>Upload Photos</span>
-              <input type="file" id="linenPhotoInput" accept="image/*" multiple ${linenState.editMode ? "" : "disabled"} />
-            </label>
-            <div class="upload-hint">อัปได้หลายรูป • ระบบจะย่อขนาดก่อนอัปขึ้น Firebase Storage ทุกครั้ง</div>
-          </div>
-          ${renderReportImageGallery(linenState.reportData.images, "linen", linenState.editMode)}
-        </div>
         <div class="panel">
           <h4>Inventory Note</h4>
           <textarea id="linenNote" class="loss-note-area" ${linenState.editMode ? "" : "disabled"} placeholder="หมายเหตุเพิ่มเติมของ inventory report">${escapeHtml(linenState.reportData.note || "")}</textarea>
@@ -3008,6 +3010,7 @@ function renderLinenInventoryModule(){
 
   bindLinenInventoryEvents();
 }
+
 function linenInput(lineIndex, field, value, type){
   const inputType = type === "number" ? "number" : "text";
   const cls = type === "number" ? "cell-input linen-number-input" : "linen-text-input";
@@ -3016,6 +3019,30 @@ function linenInput(lineIndex, field, value, type){
 }
 function linenMonthInput(lineIndex, monthIndex, value){
   return `<input class="cell-input linen-number-input linen-month-input" data-line="${lineIndex}" data-month="${monthIndex}" type="number" inputmode="numeric" min="0" value="${escapeHtml(value || "")}" ${linenState.editMode ? "" : "disabled"} />`;
+}
+
+function renderLinenRowImages(lineIndex, images, editMode){
+  const list = Array.isArray(images) ? images : [];
+  return `
+    <div class="linen-row-media">
+      <label class="mini-upload-label ${editMode ? "" : "disabled"}">
+        <span>Upload</span>
+        <input type="file" class="linen-row-photo-input" data-line="${lineIndex}" accept="image/*" multiple ${editMode ? "" : "disabled"} />
+      </label>
+      ${list.length ? `
+        <div class="linen-row-thumb-list">
+          ${list.map(image => `
+            <div class="linen-row-thumb-card">
+              <button type="button" class="linen-row-thumb" data-view-image="${escapeHtml(image.url)}">
+                <img src="${escapeHtml(image.url)}" alt="${escapeHtml(image.name || "image")}" />
+              </button>
+              ${editMode ? `<button type="button" class="linen-remove-thumb" data-linen-line="${lineIndex}" data-linen-remove-image="${escapeHtml(image.id)}">×</button>` : ""}
+            </div>
+          `).join("")}
+        </div>
+      ` : `<div class="linen-row-empty">No image</div>`}
+    </div>
+  `;
 }
 function refreshLinenLiveTotals(){
   const totals = linenTotals();
@@ -3036,7 +3063,6 @@ function bindLinenInventoryEvents(){
   const monthInput = document.getElementById("linenMonthInput");
   const outletInput = document.getElementById("linenOutletDept");
   const noteInput = document.getElementById("linenNote");
-  const photoInput = document.getElementById("linenPhotoInput");
 
   yearInput.addEventListener("change", () => {
     const nextYear = Number(yearInput.value || new Date().getFullYear());
@@ -3049,6 +3075,7 @@ function bindLinenInventoryEvents(){
     linenState.dirty = false;
     renderLinenInventoryModule();
   });
+
   monthInput.addEventListener("change", () => {
     const nextMonth = Number(monthInput.value);
     if (!canDiscardLinenEdits()) {
@@ -3068,6 +3095,7 @@ function bindLinenInventoryEvents(){
     linenState.dirty = false;
     renderLinenInventoryModule();
   });
+
   document.getElementById("linenSaveBtn").addEventListener("click", () => {
     if (!linenState.editMode) {
       alert("กรุณากด EDIT ก่อน แล้วค่อยกด SAVE");
@@ -3079,28 +3107,42 @@ function bindLinenInventoryEvents(){
     linenState.dirty = false;
     renderLinenInventoryModule();
   });
+
   document.getElementById("linenCancelBtn").addEventListener("click", () => {
     if (!linenState.editMode) {
       alert("ยังไม่มีการแก้ไขให้ยกเลิก");
       return;
     }
-    const currentImages = cloneDeep(linenState.reportData.images || []);
-    const snapshotImages = cloneDeep((linenState.savedSnapshot && linenState.savedSnapshot.images) || []);
+    const currentImages = flattenLinenLineImages(linenState.reportData);
+    const snapshotImages = flattenLinenLineImages(linenState.savedSnapshot || {});
     linenState.reportData = linenState.savedSnapshot ? cloneDeep(linenState.savedSnapshot) : createEmptyLinenReport(linenState.year, linenState.month);
     linenState.editMode = false;
     linenState.dirty = false;
     renderLinenInventoryModule();
     cleanupAddedImages(currentImages, snapshotImages).catch(console.error);
   });
+
+  document.getElementById("linenAddRowBtn").addEventListener("click", () => {
+    if (!linenState.editMode) {
+      alert("กรุณากด EDIT ก่อน แล้วค่อยเพิ่มแถว");
+      return;
+    }
+    linenState.reportData.lines.push(createEmptyLinenLine(linenState.reportData.lines.length));
+    linenState.dirty = true;
+    renderLinenInventoryModule();
+  });
+
   document.getElementById("linenExportReportBtn").addEventListener("click", () => {
     exportLinenReportDocument();
   });
+
   document.getElementById("linenExportBtn").addEventListener("click", () => {
     downloadFile(`laya-linen-inventory-${linenPeriodKey()}.csv`, toCSV(linenExportRows()));
   });
+
   document.getElementById("linenClearBtn").addEventListener("click", () => {
     if (!confirm(`ลบข้อมูลของรายงาน ${linenPeriodKey()} ?`)) return;
-    const oldImages = cloneDeep(linenState.reportData.images || []);
+    const oldImages = flattenLinenLineImages(linenState.reportData);
     linenState.reportData = createEmptyLinenReport(linenState.year, linenState.month);
     linenState.savedSnapshot = cloneDeep(linenState.reportData);
     linenState.editMode = false;
@@ -3114,6 +3156,7 @@ function bindLinenInventoryEvents(){
     linenState.reportData.outletDept = event.target.value;
     linenState.dirty = true;
   });
+
   if (noteInput) noteInput.addEventListener("input", (event) => {
     linenState.reportData.note = event.target.value;
     linenState.dirty = true;
@@ -3144,8 +3187,8 @@ function bindLinenInventoryEvents(){
     });
   });
 
-  if (photoInput) {
-    photoInput.addEventListener("change", async (event) => {
+  document.querySelectorAll(".linen-row-photo-input").forEach(input => {
+    input.addEventListener("change", async (event) => {
       const files = Array.from(event.target.files || []);
       event.target.value = "";
       if (!files.length) return;
@@ -3153,31 +3196,561 @@ function bindLinenInventoryEvents(){
         alert("กรุณากด EDIT ก่อนอัปโหลดรูป");
         return;
       }
+      const lineIndex = Number(event.target.dataset.line);
       try {
-        const uploaded = await uploadCompressedImagesToStorage("linen-inventory", linenPeriodKey(), files);
-        linenState.reportData.images = [...(linenState.reportData.images || []), ...uploaded];
+        const uploaded = await uploadCompressedImagesToStorage("linen-inventory", `${linenPeriodKey()}/row-${lineIndex + 1}`, files);
+        linenState.reportData.lines[lineIndex].images = [...(linenState.reportData.lines[lineIndex].images || []), ...uploaded];
         linenState.dirty = true;
         renderLinenInventoryModule();
       } catch (error) {
         commonImageUploadError(error);
       }
     });
-  }
+  });
 
   document.querySelectorAll("[data-view-image]").forEach(btn => {
     btn.addEventListener("click", () => openImageUrl(btn.dataset.viewImage));
   });
+
   document.querySelectorAll("[data-linen-remove-image]").forEach(btn => {
     btn.addEventListener("click", () => {
       if (!linenState.editMode) {
         alert("กรุณากด EDIT ก่อนลบรูป");
         return;
       }
+      const lineIndex = Number(btn.dataset.linenLine);
       const imageId = btn.dataset.linenRemoveImage;
-      const target = (linenState.reportData.images || []).find(image => image.id === imageId);
-      linenState.reportData.images = (linenState.reportData.images || []).filter(image => image.id !== imageId);
+      const target = (linenState.reportData.lines[lineIndex].images || []).find(image => image.id === imageId);
+      linenState.reportData.lines[lineIndex].images = (linenState.reportData.lines[lineIndex].images || []).filter(image => image.id !== imageId);
       linenState.dirty = true;
       renderLinenInventoryModule();
+      if (target && target.storagePath) deleteStorageFileIfPossible(target.storagePath);
+    });
+  });
+}
+
+
+
+/* Linen Record custom report */
+let linenLogState = {
+  currentDate: todayValue(),
+  reportData: null,
+  savedSnapshot: null,
+  editMode: false,
+  dirty: false
+};
+
+function linenLogStorageKey(date = linenLogState.currentDate){
+  return `${LINEN_LOG_REPORT_PREFIX}${date}`;
+}
+function createEmptyLinenLogLine(index){
+  return {
+    no: index + 1,
+    linenType: "",
+    received: "",
+    receivedBy: "",
+    issued: "",
+    issuedBy: "",
+    sentLaundry: "",
+    sentLaundryBy: "",
+    balance: "",
+    remark: "",
+    images: []
+  };
+}
+function createEmptyLinenLogReport(date = linenLogState.currentDate){
+  return {
+    outletDept: "",
+    reportDate: date,
+    lines: Array.from({ length: LINEN_LOG_TEMPLATE_ROWS }, (_, i) => createEmptyLinenLogLine(i)),
+    acknowledgeBy: "",
+    updatedAt: new Date().toISOString()
+  };
+}
+function mergeLinenLogReport(base, incoming){
+  const merged = cloneDeep(base);
+  if (incoming && typeof incoming === "object"){
+    Object.assign(merged, incoming);
+    if (Array.isArray(incoming.lines)){
+      const rowCount = Math.max(LINEN_LOG_TEMPLATE_ROWS, incoming.lines.length);
+      merged.lines = Array.from({ length: rowCount }, (_, i) => {
+        const row = { ...createEmptyLinenLogLine(i), ...(incoming.lines[i] || {}) };
+        row.no = i + 1;
+        row.images = Array.isArray(incoming.lines[i]?.images) ? incoming.lines[i].images : [];
+        return row;
+      });
+    }
+  }
+  return merged;
+}
+function loadLinenLogReport(date = linenLogState.currentDate){
+  linenLogState.currentDate = date;
+  try{
+    const raw = localStorage.getItem(linenLogStorageKey(date));
+    if (!raw){
+      linenLogState.reportData = createEmptyLinenLogReport(date);
+      linenLogState.savedSnapshot = cloneDeep(linenLogState.reportData);
+      return;
+    }
+    linenLogState.reportData = mergeLinenLogReport(createEmptyLinenLogReport(date), JSON.parse(raw));
+    linenLogState.savedSnapshot = cloneDeep(linenLogState.reportData);
+  } catch (error){
+    console.error(error);
+    linenLogState.reportData = createEmptyLinenLogReport(date);
+    linenLogState.savedSnapshot = cloneDeep(linenLogState.reportData);
+  }
+}
+function saveLinenLogReport(){
+  linenLogState.reportData.updatedAt = new Date().toISOString();
+  linenLogState.reportData.reportDate = linenLogState.currentDate;
+  localStorage.setItem(linenLogStorageKey(), JSON.stringify(linenLogState.reportData));
+}
+function linenLogReportCount(){
+  let count = 0;
+  for (let i = 0; i < localStorage.length; i += 1){
+    const key = localStorage.key(i);
+    if (key && key.startsWith(LINEN_LOG_REPORT_PREFIX)) count += 1;
+  }
+  return count;
+}
+function exportAllLinenLogReports(){
+  const bundle = {};
+  for (let i = 0; i < localStorage.length; i += 1){
+    const key = localStorage.key(i);
+    if (!key || !key.startsWith(LINEN_LOG_REPORT_PREFIX)) continue;
+    try {
+      bundle[key.replace(LINEN_LOG_REPORT_PREFIX, "")] = JSON.parse(localStorage.getItem(key));
+    } catch (error) {
+      console.error(error);
+    }
+  }
+  return bundle;
+}
+function flattenLinenLogImages(reportData){
+  return (reportData?.lines || []).flatMap(line => Array.isArray(line.images) ? line.images : []);
+}
+function canDiscardLinenLogEdits(){
+  if (!linenLogState.editMode || !linenLogState.dirty) return true;
+  return confirm("มีการแก้ไขที่ยังไม่ได้บันทึก ต้องการออกหรือเปลี่ยนวันรายงานต่อหรือไม่?");
+}
+function linenLogTotals(){
+  return linenLogState.reportData.lines.reduce((acc, line) => {
+    acc.received += Number(line.received || 0);
+    acc.issued += Number(line.issued || 0);
+    acc.sentLaundry += Number(line.sentLaundry || 0);
+    acc.balance += Number(line.balance || 0);
+    return acc;
+  }, { received: 0, issued: 0, sentLaundry: 0, balance: 0 });
+}
+function linenLogExportRows(){
+  return linenLogState.reportData.lines.map((line, index) => ({
+    reportDate: linenLogState.currentDate,
+    outletDept: linenLogState.reportData.outletDept,
+    no: index + 1,
+    linenType: line.linenType,
+    received: line.received,
+    receivedBy: line.receivedBy,
+    issued: line.issued,
+    issuedBy: line.issuedBy,
+    sentLaundry: line.sentLaundry,
+    sentLaundryBy: line.sentLaundryBy,
+    balance: line.balance,
+    remark: line.remark,
+    imageCount: (line.images || []).length
+  }));
+}
+function renderLinenLogRowImages(lineIndex, images, editMode){
+  const list = Array.isArray(images) ? images : [];
+  return `
+    <div class="linen-log-row-media">
+      <label class="mini-upload-label ${editMode ? "" : "disabled"}">
+        <span>Upload</span>
+        <input type="file" class="linen-log-photo-input" data-line="${lineIndex}" accept="image/*" multiple ${editMode ? "" : "disabled"} />
+      </label>
+      ${list.length ? `
+        <div class="linen-log-thumb-list">
+          ${list.map(image => `
+            <div class="linen-log-thumb-card">
+              <button type="button" class="linen-log-thumb" data-view-image="${escapeHtml(image.url)}">
+                <img src="${escapeHtml(image.url)}" alt="${escapeHtml(image.name || "image")}" />
+              </button>
+              ${editMode ? `<button type="button" class="linen-log-remove-thumb" data-linenlog-line="${lineIndex}" data-linenlog-remove-image="${escapeHtml(image.id)}">×</button>` : ""}
+            </div>
+          `).join("")}
+        </div>
+      ` : `<div class="linen-log-row-empty">No image</div>`}
+    </div>
+  `;
+}
+function linenLogInput(lineIndex, field, value, type = "text"){
+  const numeric = ["received", "issued", "sentLaundry", "balance"].includes(field);
+  return `<input class="cell-input linen-log-input ${numeric ? "linen-number-input" : "linen-text-input"}" data-line="${lineIndex}" data-field="${field}" type="${type}" inputmode="${numeric ? "numeric" : "text"}" min="${numeric ? "0" : ""}" value="${escapeHtml(value || "")}" ${linenLogState.editMode ? "" : "disabled"} />`;
+}
+function exportLinenLogReportDocument(){
+  const totals = linenLogTotals();
+  const bodyHtml = `
+    <section class="hero">
+      <div class="eyebrow">Laya Resort Phuket</div>
+      <h1>Linen Control Log</h1>
+      <div class="meta-grid">
+        <div class="meta-field">
+          <div class="label">Outlets</div>
+          <div class="value">${escapeHtml(linenLogState.reportData.outletDept || "-")}</div>
+        </div>
+        <div class="meta-field">
+          <div class="label">Date</div>
+          <div class="value">${escapeHtml(linenLogState.currentDate)}</div>
+        </div>
+      </div>
+      <div class="grid">
+        <div class="stat sand"><div class="label">Received</div><div class="value">${formatNumber(totals.received)}</div></div>
+        <div class="stat mint"><div class="label">Issued</div><div class="value">${formatNumber(totals.issued)}</div></div>
+        <div class="stat sky"><div class="label">Balance</div><div class="value">${formatNumber(totals.balance)}</div></div>
+      </div>
+    </section>
+
+    <section class="block">
+      <table>
+        <thead>
+          <tr>
+            <th>No.</th>
+            <th>Linen Type</th>
+            <th>Received</th>
+            <th>By</th>
+            <th>Issued</th>
+            <th>By</th>
+            <th>Sent to Laundry</th>
+            <th>By</th>
+            <th>Balance</th>
+            <th>Remark</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${linenLogState.reportData.lines.map((line, index) => `
+            <tr>
+              <td>${index + 1}</td>
+              <td>${escapeHtml(line.linenType || "")}</td>
+              <td class="num">${formatNumber(line.received || 0)}</td>
+              <td>${escapeHtml(line.receivedBy || "")}</td>
+              <td class="num">${formatNumber(line.issued || 0)}</td>
+              <td>${escapeHtml(line.issuedBy || "")}</td>
+              <td class="num">${formatNumber(line.sentLaundry || 0)}</td>
+              <td>${escapeHtml(line.sentLaundryBy || "")}</td>
+              <td class="num">${formatNumber(line.balance || 0)}</td>
+              <td>${escapeHtml(line.remark || "")}</td>
+            </tr>
+          `).join("")}
+          <tr class="totals">
+            <td colspan="2">Total</td>
+            <td class="num">${formatNumber(totals.received)}</td>
+            <td></td>
+            <td class="num">${formatNumber(totals.issued)}</td>
+            <td></td>
+            <td class="num">${formatNumber(totals.sentLaundry)}</td>
+            <td></td>
+            <td class="num">${formatNumber(totals.balance)}</td>
+            <td></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="block">
+      <h3>Evidence by Item</h3>
+      ${linenLogState.reportData.lines.some(line => (line.images || []).length) ? `
+        <div class="images">
+          ${linenLogState.reportData.lines
+            .filter(line => (line.images || []).length)
+            .map(line => `
+              <div class="note-box" style="grid-column: 1 / -1;">
+                <strong>${escapeHtml(line.linenType || "-")}</strong> — ${escapeHtml(line.remark || "")}
+              </div>
+              ${(line.images || []).map(image => `
+                <div class="image-card">
+                  <img src="${escapeHtml(image.url)}" alt="${escapeHtml(image.name || "image")}" />
+                  <div class="image-meta">
+                    <div class="image-name">${escapeHtml(image.name || "image")}</div>
+                    <div class="image-sub">${bytesToLabel(image.size)} • ${Number(image.width || 0)}×${Number(image.height || 0)}</div>
+                  </div>
+                </div>
+              `).join("")}
+            `).join("")}
+        </div>` : `<div class="note-box">No attached photos</div>`}
+    </section>
+
+    <section class="block">
+      <h3>How to Use</h3>
+      <div class="note-box">
+        Record every receiving, issuing, and laundry transaction.<br>
+        Verify balance daily.<br>
+        Responsible staff must sign.
+      </div>
+    </section>
+
+    <section class="block">
+      <h3>Acknowledge</h3>
+      <div class="sign-grid">
+        <div class="sign-item"><div class="label">Acknowledge by</div><div class="value">${escapeHtml(linenLogState.reportData.acknowledgeBy || "")}</div></div>
+      </div>
+    </section>
+  `;
+  reportWindowBase(`Linen-Control-Log-${linenLogState.currentDate}`, bodyHtml);
+}
+function renderLinenRecordModule(){
+  if (!linenLogState.reportData) loadLinenLogReport(linenLogState.currentDate);
+
+  dashboardView.classList.remove("active");
+  moduleView.classList.add("active");
+  renderNav("linen-record");
+  history.replaceState({}, "", "#linen-record");
+
+  const totals = linenLogTotals();
+
+  moduleView.innerHTML = `
+    <div class="module-shell">
+      <div class="module-header">
+        <div class="module-header-top">
+          <div><button class="back-btn" id="backBtn">← กลับหน้าเมนูหลัก</button></div>
+        </div>
+        <div class="module-title-row" style="margin-top:18px">
+          <div class="module-icon-large color-purple">🧾</div>
+          <div>
+            <h3>LAYA LINEN RECORD</h3>
+            <p>Linen Control Log ตามฟอร์มใช้งานจริง พร้อมโหมด EDIT / SAVE / CANCEL และช่องแนบรูปในแต่ละแถว</p>
+          </div>
+        </div>
+
+        <div class="kpi-grid" style="margin-top:18px">
+          <div class="kpi-card"><div class="small">Saved Reports</div><div class="big">${linenLogReportCount()}</div></div>
+          <div class="kpi-card"><div class="small">Received</div><div class="big">${formatNumber(totals.received)}</div></div>
+          <div class="kpi-card"><div class="small">Issued</div><div class="big">${formatNumber(totals.issued)}</div></div>
+          <div class="kpi-card"><div class="small">Balance</div><div class="big">${formatNumber(totals.balance)}</div></div>
+        </div>
+
+        <div class="linenlog-toolbar-grid">
+          <div class="field linenlog-outlet-field"><label>Outlets</label><input id="linenLogOutletDept" value="${escapeHtml(linenLogState.reportData.outletDept || "")}" ${linenLogState.editMode ? "" : "disabled"} placeholder="Outlets: ...................." /></div>
+          <div class="field compact-field"><label>Date</label><input type="date" id="linenLogDateInput" value="${linenLogState.currentDate}" /></div>
+        </div>
+
+        <div class="meal-toolbar-actions">
+          <button class="btn ${linenLogState.editMode ? "btn-soft" : "primary"}" id="linenLogEditBtn">EDIT</button>
+          <button class="btn ${linenLogState.editMode ? "primary" : "btn-soft"}" id="linenLogSaveBtn">SAVE</button>
+          <button class="btn ${linenLogState.editMode ? "" : "btn-soft"}" id="linenLogCancelBtn">CANCEL</button>
+          <button class="btn" id="linenLogExportReportBtn">Export Report</button>
+          <button class="btn" id="linenLogExportBtn">Export CSV</button>
+          <button class="btn danger" id="linenLogClearBtn">Clear Report</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-sub">Linen Control Log</div>
+        <div class="table-wrap linenlog-table-wrap">
+          <table class="summary-table linenlog-summary-table">
+            <thead>
+              <tr class="summary-head-main">
+                <th>No.</th>
+                <th class="item-col">Linen Type</th>
+                <th>Received</th>
+                <th>By</th>
+                <th>Issued</th>
+                <th>By</th>
+                <th>Sent to Laundry</th>
+                <th>By</th>
+                <th>Balance</th>
+                <th class="item-col">Remark</th>
+                <th class="linenlog-evidence-col">Evidence</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${linenLogState.reportData.lines.map((line, index) => `
+                <tr>
+                  <td>${index + 1}</td>
+                  <td class="item-col">${linenLogInput(index, "linenType", line.linenType, "text")}</td>
+                  <td>${linenLogInput(index, "received", line.received, "number")}</td>
+                  <td>${linenLogInput(index, "receivedBy", line.receivedBy, "text")}</td>
+                  <td>${linenLogInput(index, "issued", line.issued, "number")}</td>
+                  <td>${linenLogInput(index, "issuedBy", line.issuedBy, "text")}</td>
+                  <td>${linenLogInput(index, "sentLaundry", line.sentLaundry, "number")}</td>
+                  <td>${linenLogInput(index, "sentLaundryBy", line.sentLaundryBy, "text")}</td>
+                  <td>${linenLogInput(index, "balance", line.balance, "number")}</td>
+                  <td class="item-col">${linenLogInput(index, "remark", line.remark, "text")}</td>
+                  <td class="linenlog-evidence-cell">${renderLinenLogRowImages(index, line.images, linenLogState.editMode)}</td>
+                </tr>
+              `).join("")}
+              <tr class="total-row">
+                <td colspan="2">Total</td>
+                <td>${formatNumber(totals.received)}</td>
+                <td></td>
+                <td>${formatNumber(totals.issued)}</td>
+                <td></td>
+                <td>${formatNumber(totals.sentLaundry)}</td>
+                <td></td>
+                <td>${formatNumber(totals.balance)}</td>
+                <td></td>
+                <td></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="linen-bottom-grid">
+        <div class="panel">
+          <h4>How to Use</h4>
+          <div class="footer-note">
+            Record every receiving, issuing, and laundry transaction.<br>
+            Verify balance daily.<br>
+            Responsible staff must sign.
+          </div>
+        </div>
+        <div class="panel">
+          <h4>Acknowledge</h4>
+          <div class="field"><label>Acknowledge by</label><input id="linenLogAcknowledgeBy" value="${escapeHtml(linenLogState.reportData.acknowledgeBy || "")}" ${linenLogState.editMode ? "" : "disabled"} /></div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  bindLinenRecordEvents();
+}
+function bindLinenRecordEvents(){
+  document.getElementById("backBtn").addEventListener("click", () => {
+    if (!canDiscardLinenLogEdits()) return;
+    linenLogState.editMode = false;
+    linenLogState.dirty = false;
+    if (linenLogState.savedSnapshot) linenLogState.reportData = cloneDeep(linenLogState.savedSnapshot);
+    showDashboard();
+  });
+
+  const dateInput = document.getElementById("linenLogDateInput");
+  const outletInput = document.getElementById("linenLogOutletDept");
+  const acknowledgeInput = document.getElementById("linenLogAcknowledgeBy");
+
+  dateInput.addEventListener("change", () => {
+    if (!canDiscardLinenLogEdits()) {
+      dateInput.value = linenLogState.currentDate;
+      return;
+    }
+    loadLinenLogReport(dateInput.value || todayValue());
+    linenLogState.editMode = false;
+    linenLogState.dirty = false;
+    renderLinenRecordModule();
+  });
+
+  document.getElementById("linenLogEditBtn").addEventListener("click", () => {
+    if (linenLogState.editMode) return;
+    linenLogState.savedSnapshot = cloneDeep(linenLogState.reportData);
+    linenLogState.editMode = true;
+    linenLogState.dirty = false;
+    renderLinenRecordModule();
+  });
+
+  document.getElementById("linenLogSaveBtn").addEventListener("click", () => {
+    if (!linenLogState.editMode) {
+      alert("กรุณากด EDIT ก่อน แล้วค่อยกด SAVE");
+      return;
+    }
+    saveLinenLogReport();
+    linenLogState.savedSnapshot = cloneDeep(linenLogState.reportData);
+    linenLogState.editMode = false;
+    linenLogState.dirty = false;
+    renderLinenRecordModule();
+  });
+
+  document.getElementById("linenLogCancelBtn").addEventListener("click", () => {
+    if (!linenLogState.editMode) {
+      alert("ยังไม่มีการแก้ไขให้ยกเลิก");
+      return;
+    }
+    const currentImages = flattenLinenLogImages(linenLogState.reportData);
+    const snapshotImages = flattenLinenLogImages(linenLogState.savedSnapshot || {});
+    linenLogState.reportData = linenLogState.savedSnapshot ? cloneDeep(linenLogState.savedSnapshot) : createEmptyLinenLogReport(linenLogState.currentDate);
+    linenLogState.editMode = false;
+    linenLogState.dirty = false;
+    renderLinenRecordModule();
+    cleanupAddedImages(currentImages, snapshotImages).catch(console.error);
+  });
+
+  document.getElementById("linenLogExportReportBtn").addEventListener("click", () => {
+    exportLinenLogReportDocument();
+  });
+
+  document.getElementById("linenLogExportBtn").addEventListener("click", () => {
+    downloadFile(`laya-linen-record-${linenLogState.currentDate}.csv`, toCSV(linenLogExportRows()));
+  });
+
+  document.getElementById("linenLogClearBtn").addEventListener("click", () => {
+    if (!confirm(`ลบข้อมูลของรายงานวันที่ ${linenLogState.currentDate} ?`)) return;
+    const oldImages = flattenLinenLogImages(linenLogState.reportData);
+    linenLogState.reportData = createEmptyLinenLogReport(linenLogState.currentDate);
+    linenLogState.savedSnapshot = cloneDeep(linenLogState.reportData);
+    linenLogState.editMode = false;
+    linenLogState.dirty = false;
+    saveLinenLogReport();
+    renderLinenRecordModule();
+    oldImages.forEach(image => deleteStorageFileIfPossible(image.storagePath));
+  });
+
+  if (outletInput) outletInput.addEventListener("input", (event) => {
+    linenLogState.reportData.outletDept = event.target.value;
+    linenLogState.dirty = true;
+  });
+  if (acknowledgeInput) acknowledgeInput.addEventListener("input", (event) => {
+    linenLogState.reportData.acknowledgeBy = event.target.value;
+    linenLogState.dirty = true;
+  });
+
+  document.querySelectorAll(".linen-log-input").forEach(input => {
+    input.addEventListener("change", (event) => {
+      const lineIndex = Number(event.target.dataset.line);
+      const field = event.target.dataset.field;
+      let value = event.target.value;
+      if (["received", "issued", "sentLaundry", "balance"].includes(field)) {
+        value = value === "" ? "" : Number(value);
+      }
+      linenLogState.reportData.lines[lineIndex][field] = value;
+      linenLogState.dirty = true;
+      renderLinenRecordModule();
+    });
+  });
+
+  document.querySelectorAll(".linen-log-photo-input").forEach(input => {
+    input.addEventListener("change", async (event) => {
+      const files = Array.from(event.target.files || []);
+      event.target.value = "";
+      if (!files.length) return;
+      if (!linenLogState.editMode) {
+        alert("กรุณากด EDIT ก่อนอัปโหลดรูป");
+        return;
+      }
+      const lineIndex = Number(event.target.dataset.line);
+      try {
+        const uploaded = await uploadCompressedImagesToStorage(`linen-record/item-${lineIndex + 1}`, linenLogState.currentDate, files);
+        linenLogState.reportData.lines[lineIndex].images = [...(linenLogState.reportData.lines[lineIndex].images || []), ...uploaded];
+        linenLogState.dirty = true;
+        renderLinenRecordModule();
+      } catch (error) {
+        commonImageUploadError(error);
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-view-image]").forEach(btn => {
+    btn.addEventListener("click", () => openImageUrl(btn.dataset.viewImage));
+  });
+
+  document.querySelectorAll("[data-linenlog-remove-image]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      if (!linenLogState.editMode) {
+        alert("กรุณากด EDIT ก่อนลบรูป");
+        return;
+      }
+      const lineIndex = Number(btn.dataset.linenlogLine);
+      const imageId = btn.dataset.linenlogRemoveImage;
+      const target = (linenLogState.reportData.lines[lineIndex].images || []).find(image => image.id === imageId);
+      linenLogState.reportData.lines[lineIndex].images = (linenLogState.reportData.lines[lineIndex].images || []).filter(image => image.id !== imageId);
+      linenLogState.dirty = true;
+      renderLinenRecordModule();
       if (target && target.storagePath) deleteStorageFileIfPossible(target.storagePath);
     });
   });
@@ -3188,6 +3761,7 @@ function showModule(moduleId){
   if (moduleId === "loss-damage") return renderLossDamageModule();
   if (moduleId === "breakage-spoiled") return renderBreakageSpoiledModule();
   if (moduleId === "linen-inventory") return renderLinenInventoryModule();
+  if (moduleId === "linen-record") return renderLinenRecordModule();
   return showGenericModule(moduleId);
 }
 
@@ -3207,6 +3781,8 @@ function exportAllData(){
       bundle[module.id] = exportAllBreakageReports();
     } else if (module.id === "linen-inventory") {
       bundle[module.id] = exportAllLinenReports();
+    } else if (module.id === "linen-record") {
+      bundle[module.id] = exportAllLinenLogReports();
     } else {
       bundle[module.id] = getRecords(module.id);
     }
@@ -3245,6 +3821,7 @@ function boot(){
   loadLossReport(lossState.currentDate);
   loadBreakageReport(breakageState.currentDate);
   loadLinenReport(linenState.year, linenState.month);
+  loadLinenLogReport(linenLogState.currentDate);
   loadMonthFromFirebaseIfConnected().finally(() => {
     mealState.editMode = false;
     mealState.dirty = false;
