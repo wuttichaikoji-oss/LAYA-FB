@@ -24,6 +24,8 @@ const LINEN_REPORT_PREFIX = "layaLinenInventory::report::";
 const LINEN_TEMPLATE_ROWS = 7;
 const LINEN_LOG_REPORT_PREFIX = "layaLinenRecord::report::";
 const LINEN_LOG_TEMPLATE_ROWS = 28;
+const DAILY_LINEN_CHECK_PREFIX = "layaDailyLinenChecklist::report::";
+const DAILY_LINEN_TEMPLATE_ROWS = 8;
 
 const modules = [
   {
@@ -313,6 +315,7 @@ function moduleCount(){
     else if (m.id === "breakage-spoiled") total += breakageReportCount();
     else if (m.id === "linen-inventory") total += linenReportCount();
     else if (m.id === "linen-record") total += linenLogReportCount();
+    else if (m.id === "daily-linen-inspection-check-list") total += dailyLinenReportCount();
     else total += getRecords(m.id).length;
   });
   return total;
@@ -364,7 +367,9 @@ function renderDashboard(){
             ? linenReportCount()
             : module.id === "linen-record"
               ? linenLogReportCount()
-              : getRecords(module.id).length
+              : module.id === "daily-linen-inspection-check-list"
+                ? dailyLinenReportCount()
+                : getRecords(module.id).length
   }));
 
   dashboardView.innerHTML = `
@@ -396,7 +401,7 @@ function renderDashboard(){
             <p>${module.description}</p>
           </div>
           <div class="module-bottom">
-            <div class="meta">${module.id === "meal-plan-record" ? "Month cover" : (module.id === "linen-inventory" || module.id === "linen-record") ? "Saved reports" : "Records saved"}: <strong>${module.count}</strong></div>
+            <div class="meta">${module.id === "meal-plan-record" ? "Month cover" : (module.id === "linen-inventory" || module.id === "linen-record" || module.id === "daily-linen-inspection-check-list") ? "Saved reports" : "Records saved"}: <strong>${module.count}</strong></div>
             <button class="open-btn" data-open-module="${module.id}">Open Module</button>
           </div>
         </article>
@@ -3756,12 +3761,481 @@ function bindLinenRecordEvents(){
   });
 }
 
+
+
+/* Daily Linen Inspection Checklist custom report */
+let dailyLinenState = {
+  currentDate: todayValue(),
+  reportData: null,
+  savedSnapshot: null,
+  editMode: false,
+  dirty: false
+};
+
+function dailyLinenStorageKey(date = dailyLinenState.currentDate){
+  return `${DAILY_LINEN_CHECK_PREFIX}${date}`;
+}
+function createEmptyDailyLinenLine(index){
+  const defaultItems = [
+    "Clean napkins",
+    "No stains",
+    "No tears",
+    "Properly folded",
+    "Par stock complete",
+    "Dirty linens separated",
+    "Sent to laundry",
+    ""
+  ];
+  return {
+    no: index + 1,
+    inspectionItem: defaultItems[index] || "",
+    checked: false,
+    by: "",
+    remark: "",
+    images: []
+  };
+}
+function createEmptyDailyLinenReport(date = dailyLinenState.currentDate){
+  return {
+    outletDept: "",
+    reportDate: date,
+    lines: Array.from({ length: DAILY_LINEN_TEMPLATE_ROWS }, (_, i) => createEmptyDailyLinenLine(i)),
+    inspector: "",
+    updatedAt: new Date().toISOString()
+  };
+}
+function mergeDailyLinenReport(base, incoming){
+  const merged = cloneDeep(base);
+  if (incoming && typeof incoming === "object"){
+    Object.assign(merged, incoming);
+    if (Array.isArray(incoming.lines)){
+      const rowCount = Math.max(DAILY_LINEN_TEMPLATE_ROWS, incoming.lines.length);
+      merged.lines = Array.from({ length: rowCount }, (_, i) => {
+        const row = { ...createEmptyDailyLinenLine(i), ...(incoming.lines[i] || {}) };
+        row.no = i + 1;
+        row.images = Array.isArray(incoming.lines[i]?.images) ? incoming.lines[i].images : [];
+        return row;
+      });
+    }
+  }
+  return merged;
+}
+function loadDailyLinenReport(date = dailyLinenState.currentDate){
+  dailyLinenState.currentDate = date;
+  try{
+    const raw = localStorage.getItem(dailyLinenStorageKey(date));
+    if (!raw){
+      dailyLinenState.reportData = createEmptyDailyLinenReport(date);
+      dailyLinenState.savedSnapshot = cloneDeep(dailyLinenState.reportData);
+      return;
+    }
+    dailyLinenState.reportData = mergeDailyLinenReport(createEmptyDailyLinenReport(date), JSON.parse(raw));
+    dailyLinenState.savedSnapshot = cloneDeep(dailyLinenState.reportData);
+  } catch (error){
+    console.error(error);
+    dailyLinenState.reportData = createEmptyDailyLinenReport(date);
+    dailyLinenState.savedSnapshot = cloneDeep(dailyLinenState.reportData);
+  }
+}
+function saveDailyLinenReport(){
+  dailyLinenState.reportData.updatedAt = new Date().toISOString();
+  dailyLinenState.reportData.reportDate = dailyLinenState.currentDate;
+  localStorage.setItem(dailyLinenStorageKey(), JSON.stringify(dailyLinenState.reportData));
+}
+function dailyLinenReportCount(){
+  let count = 0;
+  for (let i = 0; i < localStorage.length; i += 1){
+    const key = localStorage.key(i);
+    if (key && key.startsWith(DAILY_LINEN_CHECK_PREFIX)) count += 1;
+  }
+  return count;
+}
+function exportAllDailyLinenReports(){
+  const bundle = {};
+  for (let i = 0; i < localStorage.length; i += 1){
+    const key = localStorage.key(i);
+    if (!key || !key.startsWith(DAILY_LINEN_CHECK_PREFIX)) continue;
+    try {
+      bundle[key.replace(DAILY_LINEN_CHECK_PREFIX, "")] = JSON.parse(localStorage.getItem(key));
+    } catch (error) {
+      console.error(error);
+    }
+  }
+  return bundle;
+}
+function flattenDailyLinenImages(reportData){
+  return (reportData?.lines || []).flatMap(line => Array.isArray(line.images) ? line.images : []);
+}
+function canDiscardDailyLinenEdits(){
+  if (!dailyLinenState.editMode || !dailyLinenState.dirty) return true;
+  return confirm("มีการแก้ไขที่ยังไม่ได้บันทึก ต้องการออกหรือเปลี่ยนวันรายงานต่อหรือไม่?");
+}
+function dailyLinenTotals(){
+  return dailyLinenState.reportData.lines.reduce((acc, line) => {
+    if (line.checked) acc.checked += 1;
+    acc.total += 1;
+    acc.images += Array.isArray(line.images) ? line.images.length : 0;
+    return acc;
+  }, { checked: 0, total: 0, images: 0 });
+}
+function dailyLinenExportRows(){
+  return dailyLinenState.reportData.lines.map((line, index) => ({
+    reportDate: dailyLinenState.currentDate,
+    outletDept: dailyLinenState.reportData.outletDept,
+    inspector: dailyLinenState.reportData.inspector,
+    no: index + 1,
+    inspectionItem: line.inspectionItem,
+    checked: line.checked ? "Yes" : "No",
+    by: line.by,
+    remark: line.remark,
+    imageCount: (line.images || []).length
+  }));
+}
+function renderDailyLinenRowImages(lineIndex, images, editMode){
+  const list = Array.isArray(images) ? images : [];
+  return `
+    <div class="daily-linen-row-media">
+      <label class="mini-upload-label ${editMode ? "" : "disabled"}">
+        <span>Upload</span>
+        <input type="file" class="daily-linen-photo-input" data-line="${lineIndex}" accept="image/*" multiple ${editMode ? "" : "disabled"} />
+      </label>
+      ${list.length ? `
+        <div class="daily-linen-thumb-list">
+          ${list.map(image => `
+            <div class="daily-linen-thumb-card">
+              <button type="button" class="daily-linen-thumb" data-view-image="${escapeHtml(image.url)}">
+                <img src="${escapeHtml(image.url)}" alt="${escapeHtml(image.name || "image")}" />
+              </button>
+              ${editMode ? `<button type="button" class="daily-linen-remove-thumb" data-dailyline-line="${lineIndex}" data-dailyline-remove-image="${escapeHtml(image.id)}">×</button>` : ""}
+            </div>
+          `).join("")}
+        </div>
+      ` : `<div class="daily-linen-row-empty">No image</div>`}
+    </div>
+  `;
+}
+function dailyLinenTextInput(lineIndex, field, value, placeholder = ""){
+  return `<input class="cell-input daily-linen-input daily-linen-text-input" data-line="${lineIndex}" data-field="${field}" type="text" value="${escapeHtml(value || "")}" placeholder="${escapeHtml(placeholder)}" ${dailyLinenState.editMode ? "" : "disabled"} />`;
+}
+function dailyLinenCheckboxInput(lineIndex, value){
+  return `<label class="daily-linen-check-wrap ${dailyLinenState.editMode ? "editable" : "readonly"}"><input class="daily-linen-check-input" data-line="${lineIndex}" type="checkbox" ${value ? "checked" : ""} ${dailyLinenState.editMode ? "" : "disabled"} /><span>✓</span></label>`;
+}
+function exportDailyLinenReportDocument(){
+  const totals = dailyLinenTotals();
+  const bodyHtml = `
+    <section class="hero">
+      <div class="eyebrow">Laya Resort Phuket</div>
+      <h1>Daily Linen Inspection Checklist</h1>
+      <div class="meta-grid">
+        <div class="meta-field">
+          <div class="label">Outlets</div>
+          <div class="value">${escapeHtml(dailyLinenState.reportData.outletDept || "-")}</div>
+        </div>
+        <div class="meta-field">
+          <div class="label">Date</div>
+          <div class="value">${escapeHtml(dailyLinenState.currentDate)}</div>
+        </div>
+      </div>
+      <div class="grid">
+        <div class="stat sand"><div class="label">Checked Items</div><div class="value">${formatNumber(totals.checked)}</div></div>
+        <div class="stat mint"><div class="label">Total Items</div><div class="value">${formatNumber(totals.total)}</div></div>
+        <div class="stat sky"><div class="label">Images</div><div class="value">${formatNumber(totals.images)}</div></div>
+      </div>
+    </section>
+
+    <section class="block">
+      <table>
+        <thead>
+          <tr>
+            <th>No.</th>
+            <th>Inspection Item</th>
+            <th>Checked</th>
+            <th>By</th>
+            <th>Remark</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${dailyLinenState.reportData.lines.map((line, index) => `
+            <tr>
+              <td>${index + 1}</td>
+              <td>${escapeHtml(line.inspectionItem || "")}</td>
+              <td>${line.checked ? "✓" : ""}</td>
+              <td>${escapeHtml(line.by || "")}</td>
+              <td>${escapeHtml(line.remark || "")}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </section>
+
+    <section class="block">
+      <h3>Evidence by Item</h3>
+      ${dailyLinenState.reportData.lines.some(line => (line.images || []).length) ? `
+        <div class="images">
+          ${dailyLinenState.reportData.lines
+            .filter(line => (line.images || []).length)
+            .map(line => `
+              <div class="note-box" style="grid-column: 1 / -1;">
+                <strong>${escapeHtml(line.inspectionItem || "-")}</strong> — ${escapeHtml(line.remark || "")}
+              </div>
+              ${(line.images || []).map(image => `
+                <div class="image-card">
+                  <img src="${escapeHtml(image.url)}" alt="${escapeHtml(image.name || "image")}" />
+                  <div class="image-meta">
+                    <div class="image-name">${escapeHtml(image.name || "image")}</div>
+                    <div class="image-sub">${bytesToLabel(image.size)} • ${Number(image.width || 0)}×${Number(image.height || 0)}</div>
+                  </div>
+                </div>
+              `).join("")}
+            `).join("")}
+        </div>` : `<div class="note-box">No attached photos</div>`}
+    </section>
+
+    <section class="block">
+      <h3>Inspector</h3>
+      <div class="sign-grid">
+        <div class="sign-item"><div class="label">Inspector</div><div class="value">${escapeHtml(dailyLinenState.reportData.inspector || "")}</div></div>
+      </div>
+    </section>
+  `;
+  reportWindowBase(`Daily-Linen-Inspection-${dailyLinenState.currentDate}`, bodyHtml);
+}
+function renderDailyLinenInspectionModule(){
+  if (!dailyLinenState.reportData) loadDailyLinenReport(dailyLinenState.currentDate);
+
+  dashboardView.classList.remove("active");
+  moduleView.classList.add("active");
+  renderNav("daily-linen-inspection-check-list");
+  history.replaceState({}, "", "#daily-linen-inspection-check-list");
+
+  const totals = dailyLinenTotals();
+
+  moduleView.innerHTML = `
+    <div class="module-shell">
+      <div class="module-header">
+        <div class="module-header-top">
+          <div><button class="back-btn" id="backBtn">← กลับหน้าเมนูหลัก</button></div>
+        </div>
+        <div class="module-title-row" style="margin-top:18px">
+          <div class="module-icon-large color-cyan">🧺</div>
+          <div>
+            <h3>LAYA DAILY LINEN INSPECTION CHECK LIST</h3>
+            <p>เช็กลิสต์ตรวจผ้าประจำวัน ตามฟอร์มจริง พร้อม EDIT / SAVE / CANCEL และแนบรูปในแต่ละรายการ</p>
+          </div>
+        </div>
+
+        <div class="kpi-grid" style="margin-top:18px">
+          <div class="kpi-card"><div class="small">Saved Reports</div><div class="big">${dailyLinenReportCount()}</div></div>
+          <div class="kpi-card"><div class="small">Checked</div><div class="big">${formatNumber(totals.checked)}</div></div>
+          <div class="kpi-card"><div class="small">Items</div><div class="big">${formatNumber(totals.total)}</div></div>
+          <div class="kpi-card"><div class="small">Images</div><div class="big">${formatNumber(totals.images)}</div></div>
+        </div>
+
+        <div class="dailylinen-toolbar-grid">
+          <div class="field dailylinen-outlet-field"><label>Outlets</label><input id="dailyLinenOutletDept" value="${escapeHtml(dailyLinenState.reportData.outletDept || "")}" ${dailyLinenState.editMode ? "" : "disabled"} placeholder="Outlets: ...................." /></div>
+          <div class="field compact-field"><label>Date</label><input type="date" id="dailyLinenDateInput" value="${dailyLinenState.currentDate}" /></div>
+          <div class="field compact-field"><label>Inspector</label><input id="dailyLinenInspector" value="${escapeHtml(dailyLinenState.reportData.inspector || "")}" ${dailyLinenState.editMode ? "" : "disabled"} placeholder="Inspector name" /></div>
+        </div>
+
+        <div class="meal-toolbar-actions">
+          <button class="btn ${dailyLinenState.editMode ? "btn-soft" : "primary"}" id="dailyLinenEditBtn">EDIT</button>
+          <button class="btn ${dailyLinenState.editMode ? "primary" : "btn-soft"}" id="dailyLinenSaveBtn">SAVE</button>
+          <button class="btn ${dailyLinenState.editMode ? "" : "btn-soft"}" id="dailyLinenCancelBtn">CANCEL</button>
+          <button class="btn" id="dailyLinenExportReportBtn">Export Report</button>
+          <button class="btn" id="dailyLinenExportBtn">Export CSV</button>
+          <button class="btn danger" id="dailyLinenClearBtn">Clear Report</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-sub">Daily Linen Inspection Checklist</div>
+        <div class="table-wrap dailylinen-table-wrap">
+          <table class="summary-table dailylinen-summary-table">
+            <thead>
+              <tr class="summary-head-main">
+                <th>No.</th>
+                <th class="item-col">Inspection Item</th>
+                <th>Checked</th>
+                <th>By</th>
+                <th class="item-col">Remark</th>
+                <th class="dailylinen-evidence-col">Evidence</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${dailyLinenState.reportData.lines.map((line, index) => `
+                <tr>
+                  <td>${index + 1}</td>
+                  <td class="item-col">${dailyLinenTextInput(index, "inspectionItem", line.inspectionItem, "Inspection item")}</td>
+                  <td>${dailyLinenCheckboxInput(index, line.checked)}</td>
+                  <td>${dailyLinenTextInput(index, "by", line.by, "By")}</td>
+                  <td class="item-col">${dailyLinenTextInput(index, "remark", line.remark, "Remark")}</td>
+                  <td class="dailylinen-evidence-cell">${renderDailyLinenRowImages(index, line.images, dailyLinenState.editMode)}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+
+  bindDailyLinenInspectionEvents();
+}
+function bindDailyLinenInspectionEvents(){
+  document.getElementById("backBtn").addEventListener("click", () => {
+    if (!canDiscardDailyLinenEdits()) return;
+    dailyLinenState.editMode = false;
+    dailyLinenState.dirty = false;
+    if (dailyLinenState.savedSnapshot) dailyLinenState.reportData = cloneDeep(dailyLinenState.savedSnapshot);
+    showDashboard();
+  });
+
+  const dateInput = document.getElementById("dailyLinenDateInput");
+  const outletInput = document.getElementById("dailyLinenOutletDept");
+  const inspectorInput = document.getElementById("dailyLinenInspector");
+
+  dateInput.addEventListener("change", () => {
+    if (!canDiscardDailyLinenEdits()) {
+      dateInput.value = dailyLinenState.currentDate;
+      return;
+    }
+    loadDailyLinenReport(dateInput.value || todayValue());
+    dailyLinenState.editMode = false;
+    dailyLinenState.dirty = false;
+    renderDailyLinenInspectionModule();
+  });
+
+  document.getElementById("dailyLinenEditBtn").addEventListener("click", () => {
+    if (dailyLinenState.editMode) return;
+    dailyLinenState.savedSnapshot = cloneDeep(dailyLinenState.reportData);
+    dailyLinenState.editMode = true;
+    dailyLinenState.dirty = false;
+    renderDailyLinenInspectionModule();
+  });
+
+  document.getElementById("dailyLinenSaveBtn").addEventListener("click", () => {
+    if (!dailyLinenState.editMode) {
+      alert("กรุณากด EDIT ก่อน แล้วค่อยกด SAVE");
+      return;
+    }
+    saveDailyLinenReport();
+    dailyLinenState.savedSnapshot = cloneDeep(dailyLinenState.reportData);
+    dailyLinenState.editMode = false;
+    dailyLinenState.dirty = false;
+    renderDailyLinenInspectionModule();
+  });
+
+  document.getElementById("dailyLinenCancelBtn").addEventListener("click", () => {
+    if (!dailyLinenState.editMode) {
+      alert("ยังไม่มีการแก้ไขให้ยกเลิก");
+      return;
+    }
+    const currentImages = flattenDailyLinenImages(dailyLinenState.reportData);
+    const snapshotImages = flattenDailyLinenImages(dailyLinenState.savedSnapshot || {});
+    dailyLinenState.reportData = dailyLinenState.savedSnapshot ? cloneDeep(dailyLinenState.savedSnapshot) : createEmptyDailyLinenReport(dailyLinenState.currentDate);
+    dailyLinenState.editMode = false;
+    dailyLinenState.dirty = false;
+    renderDailyLinenInspectionModule();
+    cleanupAddedImages(currentImages, snapshotImages).catch(console.error);
+  });
+
+  document.getElementById("dailyLinenExportReportBtn").addEventListener("click", () => {
+    exportDailyLinenReportDocument();
+  });
+
+  document.getElementById("dailyLinenExportBtn").addEventListener("click", () => {
+    downloadFile(`laya-daily-linen-inspection-${dailyLinenState.currentDate}.csv`, toCSV(dailyLinenExportRows()));
+  });
+
+  document.getElementById("dailyLinenClearBtn").addEventListener("click", () => {
+    if (!confirm(`ลบข้อมูลของรายงานวันที่ ${dailyLinenState.currentDate} ?`)) return;
+    const oldImages = flattenDailyLinenImages(dailyLinenState.reportData);
+    dailyLinenState.reportData = createEmptyDailyLinenReport(dailyLinenState.currentDate);
+    dailyLinenState.savedSnapshot = cloneDeep(dailyLinenState.reportData);
+    dailyLinenState.editMode = false;
+    dailyLinenState.dirty = false;
+    saveDailyLinenReport();
+    renderDailyLinenInspectionModule();
+    oldImages.forEach(image => deleteStorageFileIfPossible(image.storagePath));
+  });
+
+  if (outletInput) outletInput.addEventListener("input", (event) => {
+    dailyLinenState.reportData.outletDept = event.target.value;
+    dailyLinenState.dirty = true;
+  });
+  if (inspectorInput) inspectorInput.addEventListener("input", (event) => {
+    dailyLinenState.reportData.inspector = event.target.value;
+    dailyLinenState.dirty = true;
+  });
+
+  document.querySelectorAll(".daily-linen-input").forEach(input => {
+    input.addEventListener("change", (event) => {
+      const lineIndex = Number(event.target.dataset.line);
+      const field = event.target.dataset.field;
+      dailyLinenState.reportData.lines[lineIndex][field] = event.target.value;
+      dailyLinenState.dirty = true;
+      renderDailyLinenInspectionModule();
+    });
+  });
+
+  document.querySelectorAll(".daily-linen-check-input").forEach(input => {
+    input.addEventListener("change", (event) => {
+      const lineIndex = Number(event.target.dataset.line);
+      dailyLinenState.reportData.lines[lineIndex].checked = !!event.target.checked;
+      dailyLinenState.dirty = true;
+      renderDailyLinenInspectionModule();
+    });
+  });
+
+  document.querySelectorAll(".daily-linen-photo-input").forEach(input => {
+    input.addEventListener("change", async (event) => {
+      const files = Array.from(event.target.files || []);
+      event.target.value = "";
+      if (!files.length) return;
+      if (!dailyLinenState.editMode) {
+        alert("กรุณากด EDIT ก่อนอัปโหลดรูป");
+        return;
+      }
+      const lineIndex = Number(event.target.dataset.line);
+      try {
+        const uploaded = await uploadCompressedImagesToStorage(`daily-linen-check/item-${lineIndex + 1}`, dailyLinenState.currentDate, files);
+        dailyLinenState.reportData.lines[lineIndex].images = [...(dailyLinenState.reportData.lines[lineIndex].images || []), ...uploaded];
+        dailyLinenState.dirty = true;
+        renderDailyLinenInspectionModule();
+      } catch (error) {
+        commonImageUploadError(error);
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-view-image]").forEach(btn => {
+    btn.addEventListener("click", () => openImageUrl(btn.dataset.viewImage));
+  });
+
+  document.querySelectorAll("[data-dailyline-remove-image]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      if (!dailyLinenState.editMode) {
+        alert("กรุณากด EDIT ก่อนลบรูป");
+        return;
+      }
+      const lineIndex = Number(btn.dataset.dailylineLine);
+      const imageId = btn.dataset.dailylineRemoveImage;
+      const target = (dailyLinenState.reportData.lines[lineIndex].images || []).find(image => image.id === imageId);
+      dailyLinenState.reportData.lines[lineIndex].images = (dailyLinenState.reportData.lines[lineIndex].images || []).filter(image => image.id !== imageId);
+      dailyLinenState.dirty = true;
+      renderDailyLinenInspectionModule();
+      if (target && target.storagePath) deleteStorageFileIfPossible(target.storagePath);
+    });
+  });
+}
+
 function showModule(moduleId){
   if (moduleId === "meal-plan-record") return renderMealPlanModule(mealState.keepTab || "summary");
   if (moduleId === "loss-damage") return renderLossDamageModule();
   if (moduleId === "breakage-spoiled") return renderBreakageSpoiledModule();
   if (moduleId === "linen-inventory") return renderLinenInventoryModule();
   if (moduleId === "linen-record") return renderLinenRecordModule();
+  if (moduleId === "daily-linen-inspection-check-list") return renderDailyLinenInspectionModule();
   return showGenericModule(moduleId);
 }
 
@@ -3783,6 +4257,8 @@ function exportAllData(){
       bundle[module.id] = exportAllLinenReports();
     } else if (module.id === "linen-record") {
       bundle[module.id] = exportAllLinenLogReports();
+    } else if (module.id === "daily-linen-inspection-check-list") {
+      bundle[module.id] = exportAllDailyLinenReports();
     } else {
       bundle[module.id] = getRecords(module.id);
     }
@@ -3822,6 +4298,7 @@ function boot(){
   loadBreakageReport(breakageState.currentDate);
   loadLinenReport(linenState.year, linenState.month);
   loadLinenLogReport(linenLogState.currentDate);
+  loadDailyLinenReport(dailyLinenState.currentDate);
   loadMonthFromFirebaseIfConnected().finally(() => {
     mealState.editMode = false;
     mealState.dirty = false;
