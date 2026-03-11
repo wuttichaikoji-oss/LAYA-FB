@@ -89,3 +89,13 @@ This build uses one shared Firebase connection for every page that uploads photo
 - LAYA EQUIPMENT INVENTORY
 
 A new **Firebase Setup** button is available on the main dashboard.
+
+
+## Firestore sync added for report pages
+This version now saves table numbers / text fields for these modules to Firestore:
+- layaLossDamageReports
+- layaBreakageSpoiledReports
+- layaLinenInventoryReports
+- layaLinenRecordReports
+- layaDailyLinenInspectionReports
+- layaEquipmentInventoryReports
