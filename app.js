@@ -4912,4 +4912,25 @@ function boot(){
 document.querySelector('[data-target="dashboard"]').addEventListener("click", showDashboard);
 exportAllBtn.addEventListener("click", exportAllData);
 bootModal();
+
+const firebaseQuickSetupBtn = document.getElementById("firebaseQuickSetupBtn");
+if (firebaseQuickSetupBtn) {
+  firebaseQuickSetupBtn.addEventListener("click", () => {
+    try {
+      if (typeof fillFirebaseForm === "function") {
+        fillFirebaseForm(loadFirebaseConfigFromStorage() || {});
+      }
+      const modal = document.getElementById("firebaseModal");
+      if (modal) {
+        modal.classList.remove("hidden");
+      } else {
+        alert("ไม่พบหน้าต่าง Firebase Settings");
+      }
+    } catch (error) {
+      console.error(error);
+      alert("เปิด Firebase Setup ไม่สำเร็จ");
+    }
+  });
+}
+
 boot();
