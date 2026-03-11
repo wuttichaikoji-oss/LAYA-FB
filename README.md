@@ -65,3 +65,5 @@ Updated Linen Inventory: removed No columns from the monthly layout, months acce
 Added custom LAYA LINEN RECORD module based on the Linen Control Log structure, with EDIT / SAVE / CANCEL and row-level image upload.
 
 Added custom LAYA DAILY LINEN INSPECTION CHECK LIST module based on the checklist structure, with EDIT / SAVE / CANCEL and row-level image upload.
+
+Updated Daily Linen Inspection Checklist: inspection item field widened, remark changed to a real text area inside the table cell, and values remain viewable after save.

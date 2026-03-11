@@ -3915,7 +3915,15 @@ function renderDailyLinenRowImages(lineIndex, images, editMode){
   `;
 }
 function dailyLinenTextInput(lineIndex, field, value, placeholder = ""){
-  return `<input class="cell-input daily-linen-input daily-linen-text-input" data-line="${lineIndex}" data-field="${field}" type="text" value="${escapeHtml(value || "")}" placeholder="${escapeHtml(placeholder)}" ${dailyLinenState.editMode ? "" : "disabled"} />`;
+  const extraClass = field === "inspectionItem"
+    ? "daily-linen-item-input"
+    : field === "remark"
+      ? "daily-linen-remark-input"
+      : "daily-linen-text-input";
+  if (field === "remark") {
+    return `<textarea class="daily-linen-input ${extraClass}" data-line="${lineIndex}" data-field="${field}" placeholder="${escapeHtml(placeholder)}" ${dailyLinenState.editMode ? "" : "disabled"}>${escapeHtml(value || "")}</textarea>`;
+  }
+  return `<input class="daily-linen-input ${extraClass}" data-line="${lineIndex}" data-field="${field}" type="text" value="${escapeHtml(value || "")}" placeholder="${escapeHtml(placeholder)}" ${dailyLinenState.editMode ? "" : "disabled"} />`;
 }
 function dailyLinenCheckboxInput(lineIndex, value){
   return `<label class="daily-linen-check-wrap ${dailyLinenState.editMode ? "editable" : "readonly"}"><input class="daily-linen-check-input" data-line="${lineIndex}" type="checkbox" ${value ? "checked" : ""} ${dailyLinenState.editMode ? "" : "disabled"} /><span>✓</span></label>`;
@@ -4169,11 +4177,13 @@ function bindDailyLinenInspectionEvents(){
   });
 
   document.querySelectorAll(".daily-linen-input").forEach(input => {
-    input.addEventListener("change", (event) => {
+    input.addEventListener("input", (event) => {
       const lineIndex = Number(event.target.dataset.line);
       const field = event.target.dataset.field;
       dailyLinenState.reportData.lines[lineIndex][field] = event.target.value;
       dailyLinenState.dirty = true;
+    });
+    input.addEventListener("change", () => {
       renderDailyLinenInspectionModule();
     });
   });
