@@ -908,7 +908,7 @@ function initFirebaseIfPossible() {
 async function syncMonthToFirebase(showAlert = true) {
   if (!firebaseState.connected || !firebaseState.db) {
     if (showAlert) alert("Firebase ยังไม่เชื่อมต่อ");
-    return;
+    return false;
   }
   try {
     const payload = {
@@ -924,9 +924,11 @@ async function syncMonthToFirebase(showAlert = true) {
     await firebaseState.db.collection("layaMealPlanMonths").doc(getPeriodKey()).set(payload, { merge: true });
     memoryStore.mealMonths[getPeriodKey()] = JSON.parse(JSON.stringify(mealState.monthData));
     if (showAlert) alert("Sync ข้อมูลขึ้น Firebase สำเร็จ");
+    return true;
   } catch (error) {
     console.error(error);
     if (showAlert) alert("Sync Firebase ไม่สำเร็จ กรุณาตรวจสอบค่า config และ Firestore");
+    return false;
   }
 }
 async function loadMonthFromFirebaseIfConnected() {
@@ -1267,24 +1269,24 @@ function bindMealPlanEvents() {
     renderMealPlanModule(mealState.keepTab || "summary");
   });
 
-  document.getElementById("mealSaveBtn").addEventListener("click", () => {
+  document.getElementById("mealSaveBtn").addEventListener("click", async () => {
     if (!mealState.editMode) {
       alert("กรุณากด EDIT ก่อน แล้วค่อยกด SAVE");
       return;
     }
 
     saveLocalMonthData();
+    const ok = await syncMonthToFirebase(false);
+    if (!ok) {
+      alert("บันทึกขึ้น Firebase ไม่สำเร็จ กรุณาตรวจสอบค่า config, Firestore Rules และ Anonymous Auth");
+      renderMealPlanModule(mealState.keepTab || "summary");
+      return;
+    }
+
     mealState.savedSnapshot = JSON.parse(JSON.stringify(mealState.monthData));
     mealState.editMode = false;
     mealState.dirty = false;
-
     renderMealPlanModule(mealState.keepTab || "summary");
-
-    if (firebaseState.connected) {
-      syncMonthToFirebase(false).catch(error => {
-        console.error(error);
-      });
-    }
   });
 
   document.getElementById("mealCancelBtn").addEventListener("click", () => {
@@ -1677,13 +1679,16 @@ function loadLossReport(date = lossState.currentDate){
     if ((location.hash || "").replace("#", "") === "loss-damage") renderLossDamageModule();
   }).catch(console.error);
 }
-function saveLossReport(){
+async function saveLossReport(){
   lossState.reportData.updatedAt = new Date().toISOString();
-  memoryStore.lossReports[lossState.currentDate] = cloneDeep(lossState.reportData);
-  saveReportDocToFirebase("layaLossDamageReports", lossState.currentDate, {
+  const ok = await saveReportDocToFirebase("layaLossDamageReports", lossState.currentDate, {
     reportDate: lossState.currentDate,
     ...lossState.reportData
-  }).catch(console.error);
+  });
+  if (ok) {
+    memoryStore.lossReports[lossState.currentDate] = cloneDeep(lossState.reportData);
+  }
+  return ok;
 }
 function lossReportCount(){
   return Object.keys(memoryStore.lossReports || {}).length;
@@ -2043,12 +2048,17 @@ function bindLossDamageEvents(){
     renderLossDamageModule();
   });
 
-  document.getElementById("lossSaveBtn").addEventListener("click", () => {
+  document.getElementById("lossSaveBtn").addEventListener("click", async () => {
     if (!lossState.editMode) {
       alert("กรุณากด EDIT ก่อน แล้วค่อยกด SAVE");
       return;
     }
-    saveLossReport();
+    const ok = await saveLossReport();
+    if (!ok) {
+      alert("บันทึกขึ้น Firebase ไม่สำเร็จ กรุณาตรวจสอบ Firestore Rules และ Anonymous Auth");
+      renderLossDamageModule();
+      return;
+    }
     lossState.savedSnapshot = cloneDeep(lossState.reportData);
     lossState.editMode = false;
     lossState.dirty = false;
@@ -2238,13 +2248,16 @@ function loadBreakageReport(date = breakageState.currentDate){
     if ((location.hash || "").replace("#", "") === "breakage-spoiled") renderBreakageSpoiledModule();
   }).catch(console.error);
 }
-function saveBreakageReport(){
+async function saveBreakageReport(){
   breakageState.reportData.updatedAt = new Date().toISOString();
-  memoryStore.breakageReports[breakageState.currentDate] = cloneDeep(breakageState.reportData);
-  saveReportDocToFirebase("layaBreakageSpoiledReports", breakageState.currentDate, {
+  const ok = await saveReportDocToFirebase("layaBreakageSpoiledReports", breakageState.currentDate, {
     reportDate: breakageState.currentDate,
     ...breakageState.reportData
-  }).catch(console.error);
+  });
+  if (ok) {
+    memoryStore.breakageReports[breakageState.currentDate] = cloneDeep(breakageState.reportData);
+  }
+  return ok;
 }
 function breakageReportCount(){
   return Object.keys(memoryStore.breakageReports || {}).length;
@@ -2593,12 +2606,17 @@ function renderBreakageSpoiledModule(){
     renderBreakageSpoiledModule();
   });
 
-  document.getElementById("breakageSaveBtn").addEventListener("click", () => {
+  document.getElementById("breakageSaveBtn").addEventListener("click", async () => {
     if (!breakageState.editMode) {
       alert("กรุณากด EDIT ก่อน แล้วค่อยกด SAVE");
       return;
     }
-    saveBreakageReport();
+    const ok = await saveBreakageReport();
+    if (!ok) {
+      alert("บันทึกขึ้น Firebase ไม่สำเร็จ กรุณาตรวจสอบ Firestore Rules และ Anonymous Auth");
+      renderBreakageSpoiledModule();
+      return;
+    }
     breakageState.savedSnapshot = cloneDeep(breakageState.reportData);
     breakageState.editMode = false;
     breakageState.dirty = false;
@@ -2821,17 +2839,20 @@ function loadLinenReport(year = linenState.year, month = linenState.month){
     if ((location.hash || "").replace("#", "") === "linen-inventory") renderLinenInventoryModule();
   }).catch(console.error);
 }
-function saveLinenReport(){
+async function saveLinenReport(){
   linenState.reportData.updatedAt = new Date().toISOString();
   linenState.reportData.reportYear = linenState.year;
   linenState.reportData.reportMonth = linenState.month;
-  memoryStore.linenReports[linenPeriodKey()] = cloneDeep(linenState.reportData);
-  saveReportDocToFirebase("layaLinenInventoryReports", linenPeriodKey(), {
+  const ok = await saveReportDocToFirebase("layaLinenInventoryReports", linenPeriodKey(), {
     periodKey: linenPeriodKey(),
     year: linenState.year,
     month: linenState.month + 1,
     ...linenState.reportData
-  }).catch(console.error);
+  });
+  if (ok) {
+    memoryStore.linenReports[linenPeriodKey()] = cloneDeep(linenState.reportData);
+  }
+  return ok;
 }
 function linenReportCount(){
   return Object.keys(memoryStore.linenReports || {}).length;
@@ -3223,12 +3244,17 @@ function bindLinenInventoryEvents(){
     renderLinenInventoryModule();
   });
 
-  document.getElementById("linenSaveBtn").addEventListener("click", () => {
+  document.getElementById("linenSaveBtn").addEventListener("click", async () => {
     if (!linenState.editMode) {
       alert("กรุณากด EDIT ก่อน แล้วค่อยกด SAVE");
       return;
     }
-    saveLinenReport();
+    const ok = await saveLinenReport();
+    if (!ok) {
+      alert("บันทึกขึ้น Firebase ไม่สำเร็จ กรุณาตรวจสอบ Firestore Rules และ Anonymous Auth");
+      renderLinenInventoryModule();
+      return;
+    }
     linenState.savedSnapshot = cloneDeep(linenState.reportData);
     linenState.editMode = false;
     linenState.dirty = false;
@@ -3424,14 +3450,17 @@ function loadLinenLogReport(date = linenLogState.currentDate){
     if ((location.hash || "").replace("#", "") === "linen-record") renderLinenRecordModule();
   }).catch(console.error);
 }
-function saveLinenLogReport(){
+async function saveLinenLogReport(){
   linenLogState.reportData.updatedAt = new Date().toISOString();
   linenLogState.reportData.reportDate = linenLogState.currentDate;
-  memoryStore.linenLogReports[linenLogState.currentDate] = cloneDeep(linenLogState.reportData);
-  saveReportDocToFirebase("layaLinenRecordReports", linenLogState.currentDate, {
+  const ok = await saveReportDocToFirebase("layaLinenRecordReports", linenLogState.currentDate, {
     reportDate: linenLogState.currentDate,
     ...linenLogState.reportData
-  }).catch(console.error);
+  });
+  if (ok) {
+    memoryStore.linenLogReports[linenLogState.currentDate] = cloneDeep(linenLogState.reportData);
+  }
+  return ok;
 }
 function linenLogReportCount(){
   return Object.keys(memoryStore.linenLogReports || {}).length;
@@ -3758,12 +3787,17 @@ function bindLinenRecordEvents(){
     renderLinenRecordModule();
   });
 
-  document.getElementById("linenLogSaveBtn").addEventListener("click", () => {
+  document.getElementById("linenLogSaveBtn").addEventListener("click", async () => {
     if (!linenLogState.editMode) {
       alert("กรุณากด EDIT ก่อน แล้วค่อยกด SAVE");
       return;
     }
-    saveLinenLogReport();
+    const ok = await saveLinenLogReport();
+    if (!ok) {
+      alert("บันทึกขึ้น Firebase ไม่สำเร็จ กรุณาตรวจสอบ Firestore Rules และ Anonymous Auth");
+      renderLinenRecordModule();
+      return;
+    }
     linenLogState.savedSnapshot = cloneDeep(linenLogState.reportData);
     linenLogState.editMode = false;
     linenLogState.dirty = false;
@@ -3942,14 +3976,17 @@ function loadDailyLinenReport(date = dailyLinenState.currentDate){
     if ((location.hash || "").replace("#", "") === "daily-linen-inspection-check-list") renderDailyLinenInspectionModule();
   }).catch(console.error);
 }
-function saveDailyLinenReport(){
+async function saveDailyLinenReport(){
   dailyLinenState.reportData.updatedAt = new Date().toISOString();
   dailyLinenState.reportData.reportDate = dailyLinenState.currentDate;
-  memoryStore.dailyLinenReports[dailyLinenState.currentDate] = cloneDeep(dailyLinenState.reportData);
-  saveReportDocToFirebase("layaDailyLinenInspectionReports", dailyLinenState.currentDate, {
+  const ok = await saveReportDocToFirebase("layaDailyLinenInspectionReports", dailyLinenState.currentDate, {
     reportDate: dailyLinenState.currentDate,
     ...dailyLinenState.reportData
-  }).catch(console.error);
+  });
+  if (ok) {
+    memoryStore.dailyLinenReports[dailyLinenState.currentDate] = cloneDeep(dailyLinenState.reportData);
+  }
+  return ok;
 }
 function dailyLinenReportCount(){
   return Object.keys(memoryStore.dailyLinenReports || {}).length;
@@ -4215,12 +4252,17 @@ function bindDailyLinenInspectionEvents(){
     renderDailyLinenInspectionModule();
   });
 
-  document.getElementById("dailyLinenSaveBtn").addEventListener("click", () => {
+  document.getElementById("dailyLinenSaveBtn").addEventListener("click", async () => {
     if (!dailyLinenState.editMode) {
       alert("กรุณากด EDIT ก่อน แล้วค่อยกด SAVE");
       return;
     }
-    saveDailyLinenReport();
+    const ok = await saveDailyLinenReport();
+    if (!ok) {
+      alert("บันทึกขึ้น Firebase ไม่สำเร็จ กรุณาตรวจสอบ Firestore Rules และ Anonymous Auth");
+      renderDailyLinenInspectionModule();
+      return;
+    }
     dailyLinenState.savedSnapshot = cloneDeep(dailyLinenState.reportData);
     dailyLinenState.editMode = false;
     dailyLinenState.dirty = false;
@@ -4409,17 +4451,20 @@ function loadEquipmentReport(year = equipmentState.year, month = equipmentState.
     if ((location.hash || "").replace("#", "") === "equipment-inventory") renderEquipmentInventoryModule();
   }).catch(console.error);
 }
-function saveEquipmentReport(){
+async function saveEquipmentReport(){
   equipmentState.reportData.updatedAt = new Date().toISOString();
   equipmentState.reportData.updateMonth = equipmentState.month;
   equipmentState.reportData.updateYear = equipmentState.year;
-  memoryStore.equipmentReports[equipmentPeriodKey()] = cloneDeep(equipmentState.reportData);
-  saveReportDocToFirebase("layaEquipmentInventoryReports", equipmentPeriodKey(), {
+  const ok = await saveReportDocToFirebase("layaEquipmentInventoryReports", equipmentPeriodKey(), {
     periodKey: equipmentPeriodKey(),
     year: equipmentState.year,
     month: equipmentState.month + 1,
     ...equipmentState.reportData
-  }).catch(console.error);
+  });
+  if (ok) {
+    memoryStore.equipmentReports[equipmentPeriodKey()] = cloneDeep(equipmentState.reportData);
+  }
+  return ok;
 }
 function equipmentReportCount(){
   return Object.keys(memoryStore.equipmentReports || {}).length;
@@ -4770,12 +4815,17 @@ function bindEquipmentInventoryEvents(){
     renderEquipmentInventoryModule();
   });
 
-  document.getElementById("equipmentSaveBtn").addEventListener("click", () => {
+  document.getElementById("equipmentSaveBtn").addEventListener("click", async () => {
     if (!equipmentState.editMode) {
       alert("กรุณากด EDIT ก่อน แล้วค่อยกด SAVE");
       return;
     }
-    saveEquipmentReport();
+    const ok = await saveEquipmentReport();
+    if (!ok) {
+      alert("บันทึกขึ้น Firebase ไม่สำเร็จ กรุณาตรวจสอบ Firestore Rules และ Anonymous Auth");
+      renderEquipmentInventoryModule();
+      return;
+    }
     equipmentState.savedSnapshot = cloneDeep(equipmentState.reportData);
     equipmentState.editMode = false;
     equipmentState.dirty = false;
