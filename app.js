@@ -244,6 +244,18 @@ const firebaseModal = document.getElementById("firebaseModal");
 const firebaseForm = document.getElementById("firebaseForm");
 
 let firebaseState = { app: null, db: null, auth: null, storage: null, connected: false };
+const memoryStore = {
+  generic: {},
+  mealMonths: {},
+  lossReports: {},
+  breakageReports: {},
+  linenReports: {},
+  linenLogReports: {},
+  dailyLinenReports: {},
+  equipmentReports: {}
+};
+const firebaseCollectionCache = new Set();
+const firebaseCollectionLoading = {};
 let mealState = {
   year: new Date().getFullYear(),
   month: new Date().getMonth(),
@@ -282,15 +294,64 @@ function getModule(moduleId){
 function getStorageKey(moduleId){
   return HUB_STORAGE_PREFIX + moduleId;
 }
+function genericModuleCollection(moduleId){
+  return `layaGenericModule_${moduleId.replace(/[^a-z0-9]+/gi, "_")}`;
+}
+function cloneRecords(records){
+  return JSON.parse(JSON.stringify(records || []));
+}
 function getRecords(moduleId){
+  return cloneRecords(memoryStore.generic[moduleId] || []);
+}
+async function saveRecords(moduleId, records){
+  memoryStore.generic[moduleId] = cloneRecords(records);
+  if (!firebaseState.connected || !firebaseState.db) return false;
   try{
-    return JSON.parse(localStorage.getItem(getStorageKey(moduleId))) || [];
-  }catch{
-    return [];
+    await ensureFirebaseAuthReady();
+    const batch = firebaseState.db.batch();
+    const collectionRef = firebaseState.db.collection(genericModuleCollection(moduleId));
+    const snapshot = await collectionRef.get();
+    snapshot.forEach(doc => batch.delete(doc.ref));
+    (records || []).forEach(record => {
+      const docId = String(record.id || crypto.randomUUID());
+      batch.set(collectionRef.doc(docId), {
+        ...record,
+        id: docId,
+        moduleId,
+        updatedAtClient: new Date().toISOString(),
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+    });
+    await batch.commit();
+    firebaseCollectionCache.add(genericModuleCollection(moduleId));
+    return true;
+  }catch(error){
+    console.error(error);
+    return false;
   }
 }
-function saveRecords(moduleId, records){
-  localStorage.setItem(getStorageKey(moduleId), JSON.stringify(records));
+async function loadGenericRecordsFromFirebase(moduleId){
+  const collectionName = genericModuleCollection(moduleId);
+  if (!firebaseState.connected || !firebaseState.db) {
+    memoryStore.generic[moduleId] = memoryStore.generic[moduleId] || [];
+    return getRecords(moduleId);
+  }
+  if (firebaseCollectionLoading[collectionName]) return firebaseCollectionLoading[collectionName];
+  firebaseCollectionLoading[collectionName] = (async () => {
+    try{
+      await ensureFirebaseAuthReady();
+      const snapshot = await firebaseState.db.collection(collectionName).get();
+      memoryStore.generic[moduleId] = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      firebaseCollectionCache.add(collectionName);
+    }catch(error){
+      console.error(error);
+      memoryStore.generic[moduleId] = memoryStore.generic[moduleId] || [];
+    }finally{
+      delete firebaseCollectionLoading[collectionName];
+    }
+    return getRecords(moduleId);
+  })();
+  return firebaseCollectionLoading[collectionName];
 }
 function toCSV(rows){
   if(!rows.length) return "";
@@ -324,7 +385,7 @@ function moduleCount(){
   return total;
 }
 function monthCountForCard(){
-  return getOverallCover();
+  return Object.keys(memoryStore.mealMonths || {}).length || (mealState.monthData ? 1 : 0);
 }
 
 /* Dashboard + generic modules */
@@ -420,7 +481,7 @@ function renderDashboard(){
         ใช้ปุ่ม EDIT / SAVE เพื่อควบคุมการแก้ไขตัวเลขรายวันอย่างชัดเจน
       </div>
       <div class="footer-note">
-        ข้อมูลโมดูลทั่วไปเก็บใน localStorage และหน้า Meal Plan จะบันทึกเมื่อกด SAVE เท่านั้น
+        ข้อมูลทั้งหมดจะบันทึกขึ้น Firebase เป็นหลัก และจะไม่เก็บข้อมูลรายงานไว้ใน localStorage
       </div>
     </div>
   `;
@@ -572,8 +633,9 @@ function showDashboard(){
   history.replaceState({}, "", "#dashboard");
 }
 
-function showGenericModule(moduleId){
+async function showGenericModule(moduleId){
   const module = getModule(moduleId);
+  await loadGenericRecordsFromFirebase(moduleId);
   const records = getRecords(moduleId);
 
   dashboardView.classList.remove("active");
@@ -608,7 +670,7 @@ function showGenericModule(moduleId){
           <div class="panel-sub">${module.subtitle}</div>
           ${buildForm(module)}
           ${buildComputedBox(module)}
-          <div class="footer-note">ข้อมูลที่บันทึกจะเก็บไว้ในเบราว์เซอร์ของเครื่องนี้ทันที</div>
+          <div class="footer-note">ข้อมูลที่บันทึกจะส่งขึ้น Firebase ทันที</div>
         </div>
 
         <div class="panel">
@@ -627,24 +689,30 @@ function showGenericModule(moduleId){
   `;
 
   document.getElementById("backBtn").addEventListener("click", showDashboard);
-  document.getElementById("exportBtn").addEventListener("click", () => {
+  document.getElementById("exportBtn").addEventListener("click", async () => {
+    await loadGenericRecordsFromFirebase(moduleId);
     const rows = getRecords(moduleId);
     if(!rows.length){ alert("ยังไม่มีข้อมูลสำหรับ export"); return; }
     downloadFile(`${moduleId}.csv`, toCSV(rows));
   });
-  document.getElementById("clearBtn").addEventListener("click", () => {
+  document.getElementById("clearBtn").addEventListener("click", async () => {
     if(confirm(`ลบข้อมูลทั้งหมดของ ${module.title} ?`)){
-      saveRecords(moduleId, []);
+      const ok = await saveRecords(moduleId, []);
+      if (!ok) alert("ลบข้อมูลบน Firebase ไม่สำเร็จ กรุณาตรวจสอบ Firestore Rules และ Anonymous Auth");
       showGenericModule(moduleId);
     }
   });
 
   const form = document.getElementById("moduleForm");
-  form.addEventListener("submit", (event) => {
+  form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const payload = readForm(module, form);
     const next = [...getRecords(moduleId), payload];
-    saveRecords(moduleId, next);
+    const ok = await saveRecords(moduleId, next);
+    if (!ok) {
+      alert("บันทึกขึ้น Firebase ไม่สำเร็จ กรุณาตรวจสอบ Firestore Rules และ Anonymous Auth");
+      return;
+    }
     showGenericModule(moduleId);
   });
   if(module.computed){
@@ -653,10 +721,14 @@ function showGenericModule(moduleId){
   }
 
   moduleView.querySelectorAll("[data-delete-id]").forEach(btn => {
-    btn.addEventListener("click", () => {
+    btn.addEventListener("click", async () => {
       const id = btn.dataset.deleteId;
       const next = getRecords(moduleId).filter(record => record.id !== id);
-      saveRecords(moduleId, next);
+      const ok = await saveRecords(moduleId, next);
+      if (!ok) {
+        alert("ลบข้อมูลบน Firebase ไม่สำเร็จ กรุณาตรวจสอบ Firestore Rules และ Anonymous Auth");
+        return;
+      }
       showGenericModule(moduleId);
     });
   });
@@ -704,23 +776,23 @@ function mergeMonthData(base, incoming) {
 }
 function loadLocalMonthData() {
   try {
-    const raw = localStorage.getItem(mealStorageKey());
+    const raw = memoryStore.mealMonths[getPeriodKey()];
     if (!raw) {
       mealState.monthData = createEmptyMonthData();
-    mealState.savedSnapshot = JSON.parse(JSON.stringify(mealState.monthData));
       mealState.savedSnapshot = JSON.parse(JSON.stringify(mealState.monthData));
       return;
     }
-    mealState.monthData = mergeMonthData(createEmptyMonthData(), JSON.parse(raw));
+    mealState.monthData = mergeMonthData(createEmptyMonthData(), raw);
     mealState.savedSnapshot = JSON.parse(JSON.stringify(mealState.monthData));
   } catch (e) {
     console.error(e);
     mealState.monthData = createEmptyMonthData();
+    mealState.savedSnapshot = JSON.parse(JSON.stringify(mealState.monthData));
   }
 }
 function saveLocalMonthData() {
   mealState.monthData.updatedAt = new Date().toISOString();
-  localStorage.setItem(mealStorageKey(), JSON.stringify(mealState.monthData));
+  memoryStore.mealMonths[getPeriodKey()] = JSON.parse(JSON.stringify(mealState.monthData));
 }
 function groupBySection() {
   return ITEM_MASTER.reduce((acc, item) => {
@@ -824,6 +896,7 @@ function initFirebaseIfPossible() {
     const storage = typeof app.storage === "function" ? app.storage() : null;
     firebaseState = { app, db, auth, storage, connected: true };
     updateFirebaseStatus(true, "Connected");
+    preloadAllFirebaseData().catch(console.error);
     return true;
   } catch (error) {
     console.error(error);
@@ -847,7 +920,9 @@ async function syncMonthToFirebase(showAlert = true) {
       updatedAtClient: new Date().toISOString(),
       updatedAt: firebase.firestore.FieldValue.serverTimestamp()
     };
+    await ensureFirebaseAuthReady();
     await firebaseState.db.collection("layaMealPlanMonths").doc(getPeriodKey()).set(payload, { merge: true });
+    memoryStore.mealMonths[getPeriodKey()] = JSON.parse(JSON.stringify(mealState.monthData));
     if (showAlert) alert("Sync ข้อมูลขึ้น Firebase สำเร็จ");
   } catch (error) {
     console.error(error);
@@ -866,7 +941,7 @@ async function loadMonthFromFirebaseIfConnected() {
       updatedAt: data.updatedAtClient || new Date().toISOString()
     });
     mealState.savedSnapshot = JSON.parse(JSON.stringify(mealState.monthData));
-    saveLocalMonthData();
+    memoryStore.mealMonths[getPeriodKey()] = JSON.parse(JSON.stringify(mealState.monthData));
     return true;
   } catch (error) {
     console.error(error);
@@ -900,6 +975,61 @@ async function loadReportDocFromFirebase(collectionName, docId) {
   } catch (error) {
     console.error(error);
     return null;
+  }
+}
+
+async function deleteReportDocFromFirebase(collectionName, docId){
+  if (!firebaseState.connected || !firebaseState.db) return false;
+  try{
+    await ensureFirebaseAuthReady();
+    await firebaseState.db.collection(collectionName).doc(docId).delete();
+    return true;
+  }catch(error){
+    console.error(error);
+    return false;
+  }
+}
+
+async function loadCollectionMapFromFirebase(collectionName, targetKey, options = {}){
+  if (!firebaseState.connected || !firebaseState.db) return memoryStore[targetKey] || {};
+  if (firebaseCollectionLoading[collectionName]) return firebaseCollectionLoading[collectionName];
+  firebaseCollectionLoading[collectionName] = (async () => {
+    try{
+      await ensureFirebaseAuthReady();
+      const snapshot = await firebaseState.db.collection(collectionName).get();
+      const next = {};
+      snapshot.forEach(doc => {
+        next[doc.id] = doc.data();
+      });
+      memoryStore[targetKey] = next;
+      firebaseCollectionCache.add(collectionName);
+    }catch(error){
+      console.error(error);
+      memoryStore[targetKey] = memoryStore[targetKey] || {};
+    }finally{
+      delete firebaseCollectionLoading[collectionName];
+    }
+    return memoryStore[targetKey];
+  })();
+  return firebaseCollectionLoading[collectionName];
+}
+
+async function preloadAllFirebaseData(){
+  if (!firebaseState.connected || !firebaseState.db) return;
+  try{
+    await Promise.all([
+      ...modules.filter(module => module.fields).map(module => loadGenericRecordsFromFirebase(module.id)),
+      loadCollectionMapFromFirebase('layaMealPlanMonths', 'mealMonths'),
+      loadCollectionMapFromFirebase('layaLossDamageReports', 'lossReports'),
+      loadCollectionMapFromFirebase('layaBreakageSpoiledReports', 'breakageReports'),
+      loadCollectionMapFromFirebase('layaLinenInventoryReports', 'linenReports'),
+      loadCollectionMapFromFirebase('layaLinenLogReports', 'linenLogReports'),
+      loadCollectionMapFromFirebase('layaDailyLinenInspectionReports', 'dailyLinenReports'),
+      loadCollectionMapFromFirebase('layaEquipmentInventoryReports', 'equipmentReports')
+    ]);
+    if ((location.hash || '').replace('#','') === 'dashboard') renderDashboard();
+  }catch(error){
+    console.error(error);
   }
 }
 
@@ -1535,58 +1665,31 @@ function mergeLossReport(base, incoming){
 }
 function loadLossReport(date = lossState.currentDate){
   lossState.currentDate = date;
-  try {
-    const raw = localStorage.getItem(lossStorageKey(date));
-    if (!raw) {
-      lossState.reportData = createEmptyLossReport(date);
-      lossState.savedSnapshot = cloneDeep(lossState.reportData);
-    } else {
-      const parsed = JSON.parse(raw);
-      lossState.reportData = mergeLossReport(createEmptyLossReport(date), parsed);
-      lossState.savedSnapshot = cloneDeep(lossState.reportData);
-    }
-  } catch (error) {
-    console.error(error);
-    lossState.reportData = createEmptyLossReport(date);
-    lossState.savedSnapshot = cloneDeep(lossState.reportData);
-  }
+  const cached = memoryStore.lossReports[date];
+  lossState.reportData = cached ? mergeLossReport(createEmptyLossReport(date), cached) : createEmptyLossReport(date);
+  lossState.savedSnapshot = cloneDeep(lossState.reportData);
 
   loadReportDocFromFirebase("layaLossDamageReports", date).then((data) => {
     if (!data || lossState.currentDate !== date) return;
+    memoryStore.lossReports[date] = cloneDeep(data);
     lossState.reportData = mergeLossReport(createEmptyLossReport(date), data);
     lossState.savedSnapshot = cloneDeep(lossState.reportData);
-    localStorage.setItem(lossStorageKey(date), JSON.stringify(lossState.reportData));
     if ((location.hash || "").replace("#", "") === "loss-damage") renderLossDamageModule();
   }).catch(console.error);
 }
 function saveLossReport(){
   lossState.reportData.updatedAt = new Date().toISOString();
-  localStorage.setItem(lossStorageKey(lossState.currentDate), JSON.stringify(lossState.reportData));
+  memoryStore.lossReports[lossState.currentDate] = cloneDeep(lossState.reportData);
   saveReportDocToFirebase("layaLossDamageReports", lossState.currentDate, {
     reportDate: lossState.currentDate,
     ...lossState.reportData
   }).catch(console.error);
 }
 function lossReportCount(){
-  let count = 0;
-  for (let i = 0; i < localStorage.length; i += 1){
-    const key = localStorage.key(i);
-    if (key && key.startsWith(LOSS_REPORT_PREFIX)) count += 1;
-  }
-  return count;
+  return Object.keys(memoryStore.lossReports || {}).length;
 }
 function exportAllLossReports(){
-  const bundle = {};
-  for (let i = 0; i < localStorage.length; i += 1){
-    const key = localStorage.key(i);
-    if (!key || !key.startsWith(LOSS_REPORT_PREFIX)) continue;
-    try {
-      bundle[key.replace(LOSS_REPORT_PREFIX, "")] = JSON.parse(localStorage.getItem(key));
-    } catch (error) {
-      console.error(error);
-    }
-  }
-  return bundle;
+  return cloneDeep(memoryStore.lossReports || {});
 }
 function canDiscardLossEdits(){
   if (!lossState.editMode || !lossState.dirty) return true;
@@ -2123,58 +2226,31 @@ function mergeBreakageReport(base, incoming){
 }
 function loadBreakageReport(date = breakageState.currentDate){
   breakageState.currentDate = date;
-  try {
-    const raw = localStorage.getItem(breakageStorageKey(date));
-    if (!raw) {
-      breakageState.reportData = createEmptyBreakageReport(date);
-      breakageState.savedSnapshot = cloneDeep(breakageState.reportData);
-    } else {
-      const parsed = JSON.parse(raw);
-      breakageState.reportData = mergeBreakageReport(createEmptyBreakageReport(date), parsed);
-      breakageState.savedSnapshot = cloneDeep(breakageState.reportData);
-    }
-  } catch (error) {
-    console.error(error);
-    breakageState.reportData = createEmptyBreakageReport(date);
-    breakageState.savedSnapshot = cloneDeep(breakageState.reportData);
-  }
+  const cached = memoryStore.breakageReports[date];
+  breakageState.reportData = cached ? mergeBreakageReport(createEmptyBreakageReport(date), cached) : createEmptyBreakageReport(date);
+  breakageState.savedSnapshot = cloneDeep(breakageState.reportData);
 
   loadReportDocFromFirebase("layaBreakageSpoiledReports", date).then((data) => {
     if (!data || breakageState.currentDate !== date) return;
+    memoryStore.breakageReports[date] = cloneDeep(data);
     breakageState.reportData = mergeBreakageReport(createEmptyBreakageReport(date), data);
     breakageState.savedSnapshot = cloneDeep(breakageState.reportData);
-    localStorage.setItem(breakageStorageKey(date), JSON.stringify(breakageState.reportData));
     if ((location.hash || "").replace("#", "") === "breakage-spoiled") renderBreakageSpoiledModule();
   }).catch(console.error);
 }
 function saveBreakageReport(){
   breakageState.reportData.updatedAt = new Date().toISOString();
-  localStorage.setItem(breakageStorageKey(breakageState.currentDate), JSON.stringify(breakageState.reportData));
+  memoryStore.breakageReports[breakageState.currentDate] = cloneDeep(breakageState.reportData);
   saveReportDocToFirebase("layaBreakageSpoiledReports", breakageState.currentDate, {
     reportDate: breakageState.currentDate,
     ...breakageState.reportData
   }).catch(console.error);
 }
 function breakageReportCount(){
-  let count = 0;
-  for (let i = 0; i < localStorage.length; i += 1){
-    const key = localStorage.key(i);
-    if (key && key.startsWith(BREAKAGE_REPORT_PREFIX)) count += 1;
-  }
-  return count;
+  return Object.keys(memoryStore.breakageReports || {}).length;
 }
 function exportAllBreakageReports(){
-  const bundle = {};
-  for (let i = 0; i < localStorage.length; i += 1){
-    const key = localStorage.key(i);
-    if (!key || !key.startsWith(BREAKAGE_REPORT_PREFIX)) continue;
-    try {
-      bundle[key.replace(BREAKAGE_REPORT_PREFIX, "")] = JSON.parse(localStorage.getItem(key));
-    } catch (error) {
-      console.error(error);
-    }
-  }
-  return bundle;
+  return cloneDeep(memoryStore.breakageReports || {});
 }
 function canDiscardBreakageEdits(){
   if (!breakageState.editMode || !breakageState.dirty) return true;
@@ -2732,27 +2808,16 @@ function mergeLinenReport(base, incoming){
 function loadLinenReport(year = linenState.year, month = linenState.month){
   linenState.year = year;
   linenState.month = month;
-  try {
-    const raw = localStorage.getItem(linenStorageKey(year, month));
-    if (!raw) {
-      linenState.reportData = createEmptyLinenReport(year, month);
-      linenState.savedSnapshot = cloneDeep(linenState.reportData);
-    } else {
-      linenState.reportData = mergeLinenReport(createEmptyLinenReport(year, month), JSON.parse(raw));
-      linenState.savedSnapshot = cloneDeep(linenState.reportData);
-    }
-  } catch (error) {
-    console.error(error);
-    linenState.reportData = createEmptyLinenReport(year, month);
-    linenState.savedSnapshot = cloneDeep(linenState.reportData);
-  }
-
   const currentKey = linenPeriodKey(year, month);
+  const cached = memoryStore.linenReports[currentKey];
+  linenState.reportData = cached ? mergeLinenReport(createEmptyLinenReport(year, month), cached) : createEmptyLinenReport(year, month);
+  linenState.savedSnapshot = cloneDeep(linenState.reportData);
+
   loadReportDocFromFirebase("layaLinenInventoryReports", currentKey).then((data) => {
     if (!data || linenPeriodKey(linenState.year, linenState.month) !== currentKey) return;
+    memoryStore.linenReports[currentKey] = cloneDeep(data);
     linenState.reportData = mergeLinenReport(createEmptyLinenReport(year, month), data);
     linenState.savedSnapshot = cloneDeep(linenState.reportData);
-    localStorage.setItem(linenStorageKey(year, month), JSON.stringify(linenState.reportData));
     if ((location.hash || "").replace("#", "") === "linen-inventory") renderLinenInventoryModule();
   }).catch(console.error);
 }
@@ -2760,7 +2825,7 @@ function saveLinenReport(){
   linenState.reportData.updatedAt = new Date().toISOString();
   linenState.reportData.reportYear = linenState.year;
   linenState.reportData.reportMonth = linenState.month;
-  localStorage.setItem(linenStorageKey(), JSON.stringify(linenState.reportData));
+  memoryStore.linenReports[linenPeriodKey()] = cloneDeep(linenState.reportData);
   saveReportDocToFirebase("layaLinenInventoryReports", linenPeriodKey(), {
     periodKey: linenPeriodKey(),
     year: linenState.year,
@@ -2769,27 +2834,11 @@ function saveLinenReport(){
   }).catch(console.error);
 }
 function linenReportCount(){
-  let count = 0;
-  for (let i = 0; i < localStorage.length; i += 1){
-    const key = localStorage.key(i);
-    if (key && key.startsWith(LINEN_REPORT_PREFIX)) count += 1;
-  }
-  return count;
+  return Object.keys(memoryStore.linenReports || {}).length;
 }
 function exportAllLinenReports(){
-  const bundle = {};
-  for (let i = 0; i < localStorage.length; i += 1){
-    const key = localStorage.key(i);
-    if (!key || !key.startsWith(LINEN_REPORT_PREFIX)) continue;
-    try {
-      bundle[key.replace(LINEN_REPORT_PREFIX, "")] = JSON.parse(localStorage.getItem(key));
-    } catch (error) {
-      console.error(error);
-    }
-  }
-  return bundle;
+  return cloneDeep(memoryStore.linenReports || {});
 }
-
 function flattenLinenLineImages(reportData){
   return (reportData?.lines || []).flatMap(line => Array.isArray(line.images) ? line.images : []);
 }
@@ -3363,58 +3412,32 @@ function mergeLinenLogReport(base, incoming){
 }
 function loadLinenLogReport(date = linenLogState.currentDate){
   linenLogState.currentDate = date;
-  try{
-    const raw = localStorage.getItem(linenLogStorageKey(date));
-    if (!raw){
-      linenLogState.reportData = createEmptyLinenLogReport(date);
-      linenLogState.savedSnapshot = cloneDeep(linenLogState.reportData);
-    } else {
-      linenLogState.reportData = mergeLinenLogReport(createEmptyLinenLogReport(date), JSON.parse(raw));
-      linenLogState.savedSnapshot = cloneDeep(linenLogState.reportData);
-    }
-  } catch (error){
-    console.error(error);
-    linenLogState.reportData = createEmptyLinenLogReport(date);
-    linenLogState.savedSnapshot = cloneDeep(linenLogState.reportData);
-  }
+  const cached = memoryStore.linenLogReports[date];
+  linenLogState.reportData = cached ? mergeLinenLogReport(createEmptyLinenLogReport(date), cached) : createEmptyLinenLogReport(date);
+  linenLogState.savedSnapshot = cloneDeep(linenLogState.reportData);
 
   loadReportDocFromFirebase("layaLinenRecordReports", date).then((data) => {
     if (!data || linenLogState.currentDate !== date) return;
+    memoryStore.linenLogReports[date] = cloneDeep(data);
     linenLogState.reportData = mergeLinenLogReport(createEmptyLinenLogReport(date), data);
     linenLogState.savedSnapshot = cloneDeep(linenLogState.reportData);
-    localStorage.setItem(linenLogStorageKey(date), JSON.stringify(linenLogState.reportData));
     if ((location.hash || "").replace("#", "") === "linen-record") renderLinenRecordModule();
   }).catch(console.error);
 }
 function saveLinenLogReport(){
   linenLogState.reportData.updatedAt = new Date().toISOString();
   linenLogState.reportData.reportDate = linenLogState.currentDate;
-  localStorage.setItem(linenLogStorageKey(), JSON.stringify(linenLogState.reportData));
+  memoryStore.linenLogReports[linenLogState.currentDate] = cloneDeep(linenLogState.reportData);
   saveReportDocToFirebase("layaLinenRecordReports", linenLogState.currentDate, {
     reportDate: linenLogState.currentDate,
     ...linenLogState.reportData
   }).catch(console.error);
 }
 function linenLogReportCount(){
-  let count = 0;
-  for (let i = 0; i < localStorage.length; i += 1){
-    const key = localStorage.key(i);
-    if (key && key.startsWith(LINEN_LOG_REPORT_PREFIX)) count += 1;
-  }
-  return count;
+  return Object.keys(memoryStore.linenLogReports || {}).length;
 }
 function exportAllLinenLogReports(){
-  const bundle = {};
-  for (let i = 0; i < localStorage.length; i += 1){
-    const key = localStorage.key(i);
-    if (!key || !key.startsWith(LINEN_LOG_REPORT_PREFIX)) continue;
-    try {
-      bundle[key.replace(LINEN_LOG_REPORT_PREFIX, "")] = JSON.parse(localStorage.getItem(key));
-    } catch (error) {
-      console.error(error);
-    }
-  }
-  return bundle;
+  return cloneDeep(memoryStore.linenLogReports || {});
 }
 function flattenLinenLogImages(reportData){
   return (reportData?.lines || []).flatMap(line => Array.isArray(line.images) ? line.images : []);
@@ -3907,58 +3930,32 @@ function mergeDailyLinenReport(base, incoming){
 }
 function loadDailyLinenReport(date = dailyLinenState.currentDate){
   dailyLinenState.currentDate = date;
-  try{
-    const raw = localStorage.getItem(dailyLinenStorageKey(date));
-    if (!raw){
-      dailyLinenState.reportData = createEmptyDailyLinenReport(date);
-      dailyLinenState.savedSnapshot = cloneDeep(dailyLinenState.reportData);
-    } else {
-      dailyLinenState.reportData = mergeDailyLinenReport(createEmptyDailyLinenReport(date), JSON.parse(raw));
-      dailyLinenState.savedSnapshot = cloneDeep(dailyLinenState.reportData);
-    }
-  } catch (error){
-    console.error(error);
-    dailyLinenState.reportData = createEmptyDailyLinenReport(date);
-    dailyLinenState.savedSnapshot = cloneDeep(dailyLinenState.reportData);
-  }
+  const cached = memoryStore.dailyLinenReports[date];
+  dailyLinenState.reportData = cached ? mergeDailyLinenReport(createEmptyDailyLinenReport(date), cached) : createEmptyDailyLinenReport(date);
+  dailyLinenState.savedSnapshot = cloneDeep(dailyLinenState.reportData);
 
   loadReportDocFromFirebase("layaDailyLinenInspectionReports", date).then((data) => {
     if (!data || dailyLinenState.currentDate !== date) return;
+    memoryStore.dailyLinenReports[date] = cloneDeep(data);
     dailyLinenState.reportData = mergeDailyLinenReport(createEmptyDailyLinenReport(date), data);
     dailyLinenState.savedSnapshot = cloneDeep(dailyLinenState.reportData);
-    localStorage.setItem(dailyLinenStorageKey(date), JSON.stringify(dailyLinenState.reportData));
     if ((location.hash || "").replace("#", "") === "daily-linen-inspection-check-list") renderDailyLinenInspectionModule();
   }).catch(console.error);
 }
 function saveDailyLinenReport(){
   dailyLinenState.reportData.updatedAt = new Date().toISOString();
   dailyLinenState.reportData.reportDate = dailyLinenState.currentDate;
-  localStorage.setItem(dailyLinenStorageKey(), JSON.stringify(dailyLinenState.reportData));
+  memoryStore.dailyLinenReports[dailyLinenState.currentDate] = cloneDeep(dailyLinenState.reportData);
   saveReportDocToFirebase("layaDailyLinenInspectionReports", dailyLinenState.currentDate, {
     reportDate: dailyLinenState.currentDate,
     ...dailyLinenState.reportData
   }).catch(console.error);
 }
 function dailyLinenReportCount(){
-  let count = 0;
-  for (let i = 0; i < localStorage.length; i += 1){
-    const key = localStorage.key(i);
-    if (key && key.startsWith(DAILY_LINEN_CHECK_PREFIX)) count += 1;
-  }
-  return count;
+  return Object.keys(memoryStore.dailyLinenReports || {}).length;
 }
 function exportAllDailyLinenReports(){
-  const bundle = {};
-  for (let i = 0; i < localStorage.length; i += 1){
-    const key = localStorage.key(i);
-    if (!key || !key.startsWith(DAILY_LINEN_CHECK_PREFIX)) continue;
-    try {
-      bundle[key.replace(DAILY_LINEN_CHECK_PREFIX, "")] = JSON.parse(localStorage.getItem(key));
-    } catch (error) {
-      console.error(error);
-    }
-  }
-  return bundle;
+  return cloneDeep(memoryStore.dailyLinenReports || {});
 }
 function flattenDailyLinenImages(reportData){
   return (reportData?.lines || []).flatMap(line => Array.isArray(line.images) ? line.images : []);
@@ -4399,27 +4396,16 @@ function mergeEquipmentReport(base, incoming){
 function loadEquipmentReport(year = equipmentState.year, month = equipmentState.month){
   equipmentState.year = year;
   equipmentState.month = month;
-  try{
-    const raw = localStorage.getItem(equipmentStorageKey(year, month));
-    if (!raw){
-      equipmentState.reportData = createEmptyEquipmentReport(year, month);
-      equipmentState.savedSnapshot = cloneDeep(equipmentState.reportData);
-    } else {
-      equipmentState.reportData = mergeEquipmentReport(createEmptyEquipmentReport(year, month), JSON.parse(raw));
-      equipmentState.savedSnapshot = cloneDeep(equipmentState.reportData);
-    }
-  } catch (error){
-    console.error(error);
-    equipmentState.reportData = createEmptyEquipmentReport(year, month);
-    equipmentState.savedSnapshot = cloneDeep(equipmentState.reportData);
-  }
-
   const currentKey = equipmentPeriodKey(year, month);
+  const cached = memoryStore.equipmentReports[currentKey];
+  equipmentState.reportData = cached ? mergeEquipmentReport(createEmptyEquipmentReport(year, month), cached) : createEmptyEquipmentReport(year, month);
+  equipmentState.savedSnapshot = cloneDeep(equipmentState.reportData);
+
   loadReportDocFromFirebase("layaEquipmentInventoryReports", currentKey).then((data) => {
     if (!data || equipmentPeriodKey(equipmentState.year, equipmentState.month) !== currentKey) return;
+    memoryStore.equipmentReports[currentKey] = cloneDeep(data);
     equipmentState.reportData = mergeEquipmentReport(createEmptyEquipmentReport(year, month), data);
     equipmentState.savedSnapshot = cloneDeep(equipmentState.reportData);
-    localStorage.setItem(equipmentStorageKey(year, month), JSON.stringify(equipmentState.reportData));
     if ((location.hash || "").replace("#", "") === "equipment-inventory") renderEquipmentInventoryModule();
   }).catch(console.error);
 }
@@ -4427,7 +4413,7 @@ function saveEquipmentReport(){
   equipmentState.reportData.updatedAt = new Date().toISOString();
   equipmentState.reportData.updateMonth = equipmentState.month;
   equipmentState.reportData.updateYear = equipmentState.year;
-  localStorage.setItem(equipmentStorageKey(), JSON.stringify(equipmentState.reportData));
+  memoryStore.equipmentReports[equipmentPeriodKey()] = cloneDeep(equipmentState.reportData);
   saveReportDocToFirebase("layaEquipmentInventoryReports", equipmentPeriodKey(), {
     periodKey: equipmentPeriodKey(),
     year: equipmentState.year,
@@ -4436,25 +4422,10 @@ function saveEquipmentReport(){
   }).catch(console.error);
 }
 function equipmentReportCount(){
-  let count = 0;
-  for (let i = 0; i < localStorage.length; i += 1){
-    const key = localStorage.key(i);
-    if (key && key.startsWith(EQUIPMENT_REPORT_PREFIX)) count += 1;
-  }
-  return count;
+  return Object.keys(memoryStore.equipmentReports || {}).length;
 }
 function exportAllEquipmentReports(){
-  const bundle = {};
-  for (let i = 0; i < localStorage.length; i += 1){
-    const key = localStorage.key(i);
-    if (!key || !key.startsWith(EQUIPMENT_REPORT_PREFIX)) continue;
-    try {
-      bundle[key.replace(EQUIPMENT_REPORT_PREFIX, "")] = JSON.parse(localStorage.getItem(key));
-    } catch (error) {
-      console.error(error);
-    }
-  }
-  return bundle;
+  return cloneDeep(memoryStore.equipmentReports || {});
 }
 function flattenEquipmentImages(reportData){
   return (reportData?.lines || []).flatMap(line => Array.isArray(line.images) ? line.images : []);
